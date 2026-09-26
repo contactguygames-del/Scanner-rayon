@@ -111,6 +111,10 @@
       <button class="btn secondaire" id="btnDemo">▶️ Mode démo (sans caméra)</button>
       <button class="btn secondaire" id="btnStop" disabled>⏹️ Arrêter</button>
     </div>
+    <div class="row-btns" style="margin-top:8px">
+      <button class="btn secondaire" id="btnFond" disabled>📷 Mémoriser le rayon vide</button>
+      <span id="fondEtat" style="font-size:13px;color:#666"></span>
+    </div>
     <input type="file" accept="image/*" capture="environment" id="fileCam" style="display:none">
     <div id="err"></div>
 
@@ -283,6 +287,7 @@ async function startCamera() {
     running = true;
     document.getElementById('btnStop').disabled = false;
     document.getElementById('btnCam').disabled = true;
+    document.getElementById('btnFond').disabled = false;
     suiviArreter();suiviDemarrer();
   } catch (e) {
     errEl.style.display = 'block';
@@ -331,6 +336,7 @@ document.getElementById('btnPhotoAlt').onclick = () => fileCam.click();
 let demoTimer = null, demoStep = 0;
 function startDemo() {
   stopCamera(); suiviArreter(); document.getElementById('btnCam').disabled = false; grilleEl.style.display='grid';
+  document.getElementById('btnFond').disabled = true; suiviFond = null;
   document.getElementById('badgeDemo').style.display = 'block';
   video.style.display = 'none'; demoImg.style.display = 'block';
   document.getElementById('btnStop').disabled = false;
@@ -381,6 +387,8 @@ document.getElementById('btnStop').onclick = () => {
   running = false; stopLoop(); stopCamera(); stopDemo(); suiviArreter();
   document.getElementById('btnCam').disabled = false; document.getElementById('btnDemo').disabled = false;
   document.getElementById('btnStop').disabled = true;
+  document.getElementById('btnFond').disabled = true; suiviFond = null;
+  { const fe = document.getElementById('fondEtat'); if (fe) fe.textContent = ''; }
   video.style.display = 'block'; demoImg.style.display = 'none'; demoImg.removeAttribute('src');
 };
 
@@ -489,6 +497,7 @@ let suiviPerdusRecents = [];    // paquets confirmés puis déclarés "perdus", 
 let suiviProchainId = 1;
 let suiviIdsVusUneFois = 0;     // compteur d'identités CONFIRMÉES distinctes créées depuis le début du suivi (preuve : pas de double comptage)
 let frameSourceSuivi = null, frameWSuivi = 0, frameHSuivi = 0;
+let suiviFond = null; // capture du rayon vide (fond de référence), pour filtrer les faux positifs sur le décor
 
 const stageEl = document.getElementById('stage');
 const suiviCanvas = document.getElementById('suiviCanvas');
@@ -642,6 +651,48 @@ function suiviDetecterZonesTexturees(grad, d, w, h) {
   return comps;
 }
 
+/* ---- 0. Fond de référence (rayon vide), facultatif : mémorise l'image sans produits pour
+   pouvoir ignorer ensuite tout candidat qui ressemble encore à ce fond (meuble, sol, mur...). ---- */
+function suiviCapturerFond() {
+  if (!frameSource || !frameW || !frameH) return;
+  const w = SUIVI_LARGEUR_ANALYSE;
+  const h = Math.max(1, Math.round(frameH * (w / frameW)));
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  try { ctx.drawImage(frameSource, 0, 0, frameW, frameH, 0, 0, w, h); } catch (e) { return; }
+  let d;
+  try { d = ctx.getImageData(0, 0, w, h).data; } catch (e) { return; }
+  const gray = new Float32Array(w * h);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    gray[p] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+  }
+  suiviFond = { w, h, gray, rgb: d };
+  const el = document.getElementById('fondEtat');
+  if (el) el.textContent = '✅ Rayon vide mémorisé : le décor reconnu sera ignoré.';
+}
+
+// Un candidat est considéré comme "toujours le fond" si une majorité de points échantillonnés
+// dans sa zone ont sensiblement la même luminosité ET la même couleur que le fond mémorisé au même endroit.
+function suiviRessembleFond(bb, gray, d, w, h) {
+  if (!suiviFond || suiviFond.w !== w || suiviFond.h !== h) return false;
+  const step = Math.max(1, Math.round((bb.maxX - bb.minX + 1) / 6));
+  let total = 0, proches = 0;
+  for (let y = bb.minY; y <= bb.maxY; y += step) {
+    for (let x = bb.minX; x <= bb.maxX; x += step) {
+      const p = y * w + x;
+      if (p < 0 || p >= w * h) continue;
+      const dGray = Math.abs(gray[p] - suiviFond.gray[p]);
+      const i4 = p * 4;
+      const dR = Math.abs(d[i4] - suiviFond.rgb[i4]);
+      const dG = Math.abs(d[i4 + 1] - suiviFond.rgb[i4 + 1]);
+      const dB = Math.abs(d[i4 + 2] - suiviFond.rgb[i4 + 2]);
+      total++;
+      if (dGray < 18 && dR < 22 && dG < 22 && dB < 22) proches++;
+    }
+  }
+  return total > 0 && (proches / total) > 0.6;
+}
+
 /* ---- 1. Détection : combine les deux méthodes (zones plates + zones texturées) ---- */
 function suiviDetecterBlobs(source, srcW, srcH) {
   if (!srcW || !srcH) return [];
@@ -694,7 +745,8 @@ function suiviDetecterBlobs(source, srcW, srcH) {
   // zone texturée de son étiquette, juste au-dessus ou en dessous, désignent le même objet physique.
   // Les garde-fous d'aire ET de dimension dans suiviFusionnerBoites empêchent cette seconde passe de
   // "faire le pont" jusqu'à un objet sans rapport (ex. le meuble en dessous, via un mince reflet).
-  const candidats = fusionnerAvecGardeFou(brutsA.concat(brutsB)).filter(bb => suiviCandidatValide(bb, w, h));
+  let candidats = fusionnerAvecGardeFou(brutsA.concat(brutsB)).filter(bb => suiviCandidatValide(bb, w, h));
+  if (suiviFond) candidats = candidats.filter(bb => !suiviRessembleFond(bb, gray, d, w, h));
 
   // dédoublonnage final : après fusion, deux candidats qui désignent quand même le même paquet
   // (fort recouvrement, ou l'un presque entièrement contenu dans l'autre) ne comptent qu'une fois —
