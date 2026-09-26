@@ -384,7 +384,342 @@ document.getElementById('btnStop').onclick = () => {
   video.style.display = 'block'; demoImg.style.display = 'none'; demoImg.removeAttribute('src');
 };
 
-/* ===== SUIVI DE PAQUETS SANS GRILLE (nouvelle fonctionnalite) ===== Contrairement au mode demo ci-dessus (grille fixe de 12 cases, comparees a 12 references connues a l'avance), ce bloc ne connait RIEN du rayon : il decouvre les paquets visibles a l'ecran et les suit d'image en image pendant que le telephone bouge, sans supposer ni grille, ni nombre de produits, ni ordre attendu. La reconnaissance de la reference precise arrive dans une prochaine mission : ici, un contour represente seulement un paquet physique que la camera suit, pas encore je sais lequel c'est. Methode : 1) DETECTION par image reduite -> contraste local -> zones de faible contraste regroupees par voisinage (flood fill) en candidats rectangulaires, filtres par taille et forme. 2) SUIVI d'une image a l'autre : chaque candidat est rapproche des paquets deja suivis par position (chevauchement de zone) ET par apparence (meme hachage dHash + couleur moyenne que le mode demo). 3) MEMOIRE courte : un paquet qui sort du cadre reste en memoire quelques secondes ; s'il revient et que son apparence correspond nettement a un seul candidat en memoire, on lui redonne la meme identite au lieu de le recompter. En cas d'ambiguite, l'identite n'est jamais devinee : le paquet recoit un contour ambigu distinct. Reglages de premiere version, a ajuster apres test sur un vrai rayon. */ preloadSignatures();
+
+/* ==========================================================================
+   SUIVI DE PAQUETS SANS GRILLE (nouvelle fonctionnalité)
+   --------------------------------------------------------------------------
+   Contrairement au mode démo ci-dessus (grille fixe de 12 cases, comparées
+   à 12 références connues à l'avance), ce bloc ne connaît RIEN du rayon :
+   il découvre les paquets visibles à l'écran et les suit d'image en image
+   pendant que le téléphone bouge, sans supposer ni grille, ni nombre de
+   produits, ni ordre attendu. La reconnaissance de la référence précise
+   (quel produit exact) arrive dans une prochaine mission : ici, un contour
+   représente seulement "un paquet physique que la caméra suit", pas encore
+   "je sais lequel c'est".
+   Méthode utilisée (aucune bibliothèque, aucun modèle à télécharger) :
+   1) DÉTECTION par image : image réduite → contraste local (gradient) →
+      les zones de faible contraste ("intérieur plat" d'un paquet) sont
+      regroupées par voisinage (flood fill) en candidats rectangulaires,
+      filtrés par taille et forme.
+   2) SUIVI d'une image à l'autre : chaque candidat est rapproché des
+      paquets déjà suivis par position (chevauchement de zone) ET par
+      apparence (le même hachage dHash + couleur moyenne que le mode démo),
+      pour rester attaché au bon paquet physique même si le cadrage bouge.
+   3) MÉMOIRE courte : un paquet qui sort du cadre reste en mémoire
+      quelques secondes ; s'il revient et que son apparence correspond
+      nettement à un seul candidat en mémoire, on lui redonne la même
+      identité au lieu de le recompter. En cas d'ambiguïté (deux paquets
+      qui se ressemblent trop, ex. deux emballages identiques), l'identité
+      n'est jamais devinée : le paquet reçoit un contour "ambigu" distinct.
+   Ce sont des réglages de première version, à ajuster après le test sur un
+   vrai rayon (voir le compte-rendu livré avec cette mission).
+   ========================================================================== */
+
+const SUIVI_LARGEUR_ANALYSE = 220;   // largeur (px) de l'image réduite utilisée pour la détection : compromis vitesse/précision
+const SUIVI_PERIODE_MS      = 300;   // cadence d'analyse du suivi (ms)
+const SUIVI_SEUIL_GRADIENT  = 18;    // au-dessus de ce contraste local, un pixel est considéré comme un "bord"
+const SUIVI_AIRE_MIN        = 0.006; // un blob plus petit que 0,6 % de l'image analysée est ignoré (bruit)
+const SUIVI_AIRE_MAX        = 0.55;  // un blob plus grand que 55 % de l'image est probablement le fond du rayon
+const SUIVI_RATIO_MAX       = 4.2;   // un blob trop filiforme (largeur/hauteur ou inverse) est rejeté
+const SUIVI_GRACE_FRAMES    = 3;     // nombre d'analyses sans détection avant de passer "incertain" puis "perdu"
+const SUIVI_MEMOIRE_MS      = 15000; // durée pendant laquelle un paquet "perdu" reste en mémoire pour une ré-identification
+const SUIVI_SEUIL_REID      = 0.78;  // similarité minimale pour redonner une identité à un paquet revenu dans le cadre
+const SUIVI_MARGE_REID      = 0.05;  // écart minimal entre le meilleur et le second meilleur candidat pour trancher sans ambiguïté
+const SUIVI_SEUIL_APPARIEMENT = 0.30; // score minimal (position + apparence) pour rattacher une détection à un suivi existant
+
+let suiviTimer = null;
+let suiviTracks = [];           // paquets actuellement suivis ou en grâce (visibles ou tout juste sortis du cadre)
+let suiviPerdusRecents = [];    // paquets déclarés "perdus", gardés en mémoire courte pour ré-identification
+let suiviProchainId = 1;
+let suiviIdsVusUneFois = 0;     // compteur d'identités distinctes créées depuis le début du suivi (preuve : pas de double comptage)
+let frameSourceSuivi = null, frameWSuivi = 0, frameHSuivi = 0;
+
+const stageEl = document.getElementById('stage');
+const suiviCanvas = document.getElementById('suiviCanvas');
+const suiviCtx = suiviCanvas.getContext('2d');
+const suiviStatutEl = document.getElementById('suiviStatut');
+const legendeSuiviEl = document.getElementById('legendeSuivi');
+
+function suiviReset() {
+  suiviTracks = [];
+  suiviPerdusRecents = [];
+  suiviProchainId = 1;
+  suiviIdsVusUneFois = 0;
+  suiviCtx.clearRect(0, 0, suiviCanvas.width, suiviCanvas.height);
+  suiviStatutEl.textContent = '';
+}
+
+/* ---- 1. Détection : zones plates candidates à être un paquet ---- */
+function suiviDetecterBlobs(source, srcW, srcH) {
+  if (!srcW || !srcH) return [];
+  const w = SUIVI_LARGEUR_ANALYSE;
+  const h = Math.max(1, Math.round(srcH * (w / srcW)));
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  try { ctx.drawImage(source, 0, 0, srcW, srcH, 0, 0, w, h); } catch (e) { return []; }
+  let d;
+  try { d = ctx.getImageData(0, 0, w, h).data; } catch (e) { return []; }
+
+  const gray = new Float32Array(w * h);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    gray[p] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+  }
+
+  const bord = new Uint8Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const gx = gray[i + 1] - gray[i - 1];
+      const gy = gray[i + w] - gray[i - w];
+      bord[i] = (Math.abs(gx) + Math.abs(gy)) > SUIVI_SEUIL_GRADIENT ? 1 : 0;
+    }
+  }
+  // le pourtour de l'image est toujours traité comme un bord, pour éviter qu'un blob "s'échappe" hors cadre
+  for (let x = 0; x < w; x++) { bord[x] = 1; bord[(h - 1) * w + x] = 1; }
+  for (let y = 0; y < h; y++) { bord[y * w] = 1; bord[y * w + w - 1] = 1; }
+
+  const vu = new Uint8Array(w * h);
+  const blobs = [];
+  const pileX = new Int32Array(w * h);
+  const pileY = new Int32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i0 = y * w + x;
+      if (vu[i0] || bord[i0]) continue;
+      let sp = 0;
+      pileX[sp] = x; pileY[sp] = y; sp++;
+      vu[i0] = 1;
+      let minX = x, maxX = x, minY = y, maxY = y, n = 0;
+      while (sp > 0) {
+        sp--;
+        const cx = pileX[sp], cy = pileY[sp];
+        n++;
+        if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+        if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
+        if (cx + 1 < w) { const ni = cy * w + (cx + 1); if (!vu[ni] && !bord[ni]) { vu[ni] = 1; pileX[sp] = cx + 1; pileY[sp] = cy; sp++; } }
+        if (cx - 1 >= 0) { const ni = cy * w + (cx - 1); if (!vu[ni] && !bord[ni]) { vu[ni] = 1; pileX[sp] = cx - 1; pileY[sp] = cy; sp++; } }
+        if (cy + 1 < h) { const ni = (cy + 1) * w + cx; if (!vu[ni] && !bord[ni]) { vu[ni] = 1; pileX[sp] = cx; pileY[sp] = cy + 1; sp++; } }
+        if (cy - 1 >= 0) { const ni = (cy - 1) * w + cx; if (!vu[ni] && !bord[ni]) { vu[ni] = 1; pileX[sp] = cx; pileY[sp] = cy - 1; sp++; } }
+      }
+      const bw = maxX - minX + 1, bh = maxY - minY + 1;
+      const aire = n / (w * h);
+      const ratio = Math.max(bw / bh, bh / bw);
+      if (aire < SUIVI_AIRE_MIN || aire > SUIVI_AIRE_MAX) continue;
+      if (ratio > SUIVI_RATIO_MAX) continue;
+      blobs.push({ x: minX / w, y: minY / h, w: bw / w, h: bh / h });
+    }
+  }
+  return blobs;
+}
+
+function suiviSignatureDeBlob(source, srcW, srcH, blob) {
+  const bx = blob.x * srcW, by = blob.y * srcH, bw = blob.w * srcW, bh = blob.h * srcH;
+  if (bw < 1 || bh < 1) return null;
+  const c = document.createElement('canvas'); c.width = 64; c.height = 64;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  try { ctx.drawImage(source, bx, by, bw, bh, 0, 0, 64, 64); } catch (e) { return null; }
+  return computeSignature(c, 64, 64);
+}
+
+function suiviIoU(a, b) {
+  const ax2 = a.x + a.w, ay2 = a.y + a.h, bx2 = b.x + b.w, by2 = b.y + b.h;
+  const ix1 = Math.max(a.x, b.x), iy1 = Math.max(a.y, b.y);
+  const ix2 = Math.min(ax2, bx2), iy2 = Math.min(ay2, by2);
+  const iw = Math.max(0, ix2 - ix1), ih = Math.max(0, iy2 - iy1);
+  const inter = iw * ih;
+  const union = a.w * a.h + b.w * b.h - inter;
+  return union > 0 ? inter / union : 0;
+}
+
+function suiviBboxPrevu(track) {
+  if (!track.prevBbox) return track.bbox;
+  const vx = track.bbox.x - track.prevBbox.x;
+  const vy = track.bbox.y - track.prevBbox.y;
+  return { x: track.bbox.x + vx, y: track.bbox.y + vy, w: track.bbox.w, h: track.bbox.h };
+}
+
+/* ---- 2. Une passe d'analyse : détecte, apparie aux suivis existants, gère mémoire et nouvelles identités ---- */
+function suiviAnalyseUneFois() {
+  if (!frameSourceSuivi || !frameWSuivi || !frameHSuivi) return;
+
+  const brutes = suiviDetecterBlobs(frameSourceSuivi, frameWSuivi, frameHSuivi);
+  const detections = [];
+  for (const b of brutes) {
+    const sig = suiviSignatureDeBlob(frameSourceSuivi, frameWSuivi, frameHSuivi, b);
+    if (sig) detections.push({ bbox: b, sig });
+  }
+
+  // 2.1 appariement des suivis existants (actifs ou en grâce) avec les détections de cette image
+  const paires = [];
+  for (let ti = 0; ti < suiviTracks.length; ti++) {
+    const prevu = suiviBboxPrevu(suiviTracks[ti]);
+    for (let di = 0; di < detections.length; di++) {
+      const iou = suiviIoU(prevu, detections[di].bbox);
+      if (iou <= 0) continue;
+      const app = similarity(suiviTracks[ti].sig, detections[di].sig);
+      paires.push({ ti, di, score: 0.65 * iou + 0.35 * app });
+    }
+  }
+  paires.sort((a, b) => b.score - a.score);
+  const pisteAssignee = new Set(), detAssignee = new Set();
+  for (const p of paires) {
+    if (pisteAssignee.has(p.ti) || detAssignee.has(p.di)) continue;
+    if (p.score < SUIVI_SEUIL_APPARIEMENT) continue;
+    pisteAssignee.add(p.ti); detAssignee.add(p.di);
+    const t = suiviTracks[p.ti], d = detections[p.di];
+    t.prevBbox = t.bbox;
+    t.bbox = {
+      x: t.bbox.x * 0.4 + d.bbox.x * 0.6, y: t.bbox.y * 0.4 + d.bbox.y * 0.6,
+      w: t.bbox.w * 0.4 + d.bbox.w * 0.6, h: t.bbox.h * 0.4 + d.bbox.h * 0.6
+    };
+    t.sig = d.sig;
+    t.framesSansDetection = 0;
+    if (t.etat !== 'ambigu') t.etat = 'actif';
+  }
+
+  // 2.2 suivis non retrouvés cette fois-ci : grâce, puis perte
+  for (let ti = 0; ti < suiviTracks.length; ti++) {
+    if (pisteAssignee.has(ti)) continue;
+    const t = suiviTracks[ti];
+    t.framesSansDetection = (t.framesSansDetection || 0) + 1;
+    t.etat = t.framesSansDetection <= SUIVI_GRACE_FRAMES ? 'incertain' : 'perdu';
+  }
+
+  // 2.3 les suivis "perdus" sortent de la liste active et passent en mémoire courte
+  const actifs = [];
+  for (const t of suiviTracks) {
+    if (t.etat === 'perdu') suiviPerdusRecents.push({ id: t.id, sig: t.sig, perduA: Date.now() });
+    else actifs.push(t);
+  }
+  suiviTracks = actifs;
+
+  const maintenant = Date.now();
+  suiviPerdusRecents = suiviPerdusRecents.filter(p => maintenant - p.perduA < SUIVI_MEMOIRE_MS);
+
+  // 2.4 détections non appariées : ré-identification depuis la mémoire, ou nouvelle identité
+  for (let di = 0; di < detections.length; di++) {
+    if (detAssignee.has(di)) continue;
+    const d = detections[di];
+    let meilleur = null, meilleurScore = -1, second = -1;
+    for (const p of suiviPerdusRecents) {
+      const s = similarity(p.sig, d.sig);
+      if (s > meilleurScore) { second = meilleurScore; meilleur = p; meilleurScore = s; }
+      else if (s > second) { second = s; }
+    }
+    let track;
+    if (meilleur && meilleurScore >= SUIVI_SEUIL_REID && (meilleurScore - Math.max(0, second)) >= SUIVI_MARGE_REID) {
+      // ré-identification nette : même identité qu'avant, pas de nouveau compte
+      track = { id: meilleur.id, bbox: d.bbox, prevBbox: null, sig: d.sig, framesSansDetection: 0, etat: 'actif' };
+      suiviPerdusRecents = suiviPerdusRecents.filter(p => p !== meilleur);
+    } else if (meilleur && meilleurScore >= SUIVI_SEUIL_REID) {
+      // ressemble fortement à plusieurs souvenirs à la fois (ex. deux paquets identiques) : on ne devine pas
+      track = { id: suiviProchainId++, bbox: d.bbox, prevBbox: null, sig: d.sig, framesSansDetection: 0, etat: 'ambigu' };
+      suiviIdsVusUneFois++;
+    } else {
+      track = { id: suiviProchainId++, bbox: d.bbox, prevBbox: null, sig: d.sig, framesSansDetection: 0, etat: 'actif' };
+      suiviIdsVusUneFois++;
+    }
+    suiviTracks.push(track);
+  }
+
+  suiviDessiner();
+  suiviMettreAJourStatut();
+}
+
+/* ---- 3. Rendu : replace chaque contour à l'écran en tenant compte du cadrage "cover" de la vidéo ---- */
+function suiviGeometrieCouverture() {
+  const rect = stageEl.getBoundingClientRect();
+  if (!frameWSuivi || !frameHSuivi || !rect.width || !rect.height) return null;
+  const echelle = Math.max(rect.width / frameWSuivi, rect.height / frameHSuivi);
+  const dispW = frameWSuivi * echelle, dispH = frameHSuivi * echelle;
+  return { rect, echelle, offX: (rect.width - dispW) / 2, offY: (rect.height - dispH) / 2 };
+}
+
+function suiviDessiner() {
+  const geo = suiviGeometrieCouverture();
+  if (!geo) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.round(geo.rect.width * dpr), ch = Math.round(geo.rect.height * dpr);
+  if (suiviCanvas.width !== cw || suiviCanvas.height !== ch) { suiviCanvas.width = cw; suiviCanvas.height = ch; }
+  suiviCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  suiviCtx.clearRect(0, 0, geo.rect.width, geo.rect.height);
+
+  const dessinerBoite = (bbox, couleur, tirets, label) => {
+    const x = bbox.x * frameWSuivi * geo.echelle + geo.offX;
+    const y = bbox.y * frameHSuivi * geo.echelle + geo.offY;
+    const w = bbox.w * frameWSuivi * geo.echelle;
+    const h = bbox.h * frameHSuivi * geo.echelle;
+    suiviCtx.lineWidth = 2.5;
+    suiviCtx.strokeStyle = couleur;
+    suiviCtx.setLineDash(tirets);
+    suiviCtx.strokeRect(x, y, w, h);
+    suiviCtx.setLineDash([]);
+    suiviCtx.font = '700 11px -apple-system, sans-serif';
+    const tw = suiviCtx.measureText(label).width;
+    suiviCtx.fillStyle = couleur;
+    suiviCtx.fillRect(x, Math.max(0, y - 16), tw + 8, 16);
+    suiviCtx.fillStyle = '#fff';
+    suiviCtx.fillText(label, x + 4, Math.max(11, y - 4));
+  };
+
+  for (const t of suiviTracks) {
+    if (t.etat === 'actif') dessinerBoite(t.bbox, '#2f6fed', [], `#${t.id}`);
+    else if (t.etat === 'incertain') dessinerBoite(t.bbox, '#fb8c00', [6, 4], `#${t.id} ?`);
+    else if (t.etat === 'ambigu') dessinerBoite(t.bbox, '#8e44ad', [2, 3], `#${t.id} ambigu`);
+  }
+}
+
+function suiviMettreAJourStatut() {
+  const nb = (etat) => suiviTracks.filter(t => t.etat === etat).length;
+  suiviStatutEl.innerHTML =
+    `<b>${suiviTracks.length}</b> paquet(s) à l'écran — ${nb('actif')} net(s), ${nb('incertain')} incertain(s), ${nb('ambigu')} ambigu(s)` +
+    ` · <b>${suiviIdsVusUneFois}</b> identité(s) distincte(s) créée(s) depuis le début du suivi`;
+}
+
+/* ---- 4. Démarrage / arrêt, branché sur la caméra en direct ---- */
+function suiviDemarrer() {
+  suiviReset();
+  frameSourceSuivi = video;
+  frameWSuivi = video.videoWidth || frameW;
+  frameHSuivi = video.videoHeight || frameH;
+  suiviCanvas.style.display = 'block';
+  suiviStatutEl.classList.add('visible');
+  legendeSuiviEl.classList.add('visible');
+  grilleEl.style.display = 'none';
+  document.getElementById('statut').textContent = 'Suivi en cours — détail ci-dessous.';
+  if (suiviTimer) clearInterval(suiviTimer);
+  suiviTimer = setInterval(() => {
+    frameWSuivi = video.videoWidth || frameWSuivi;
+    frameHSuivi = video.videoHeight || frameHSuivi;
+    suiviAnalyseUneFois();
+  }, SUIVI_PERIODE_MS);
+}
+
+function suiviArreter() {
+  if (suiviTimer) clearInterval(suiviTimer);
+  suiviTimer = null;
+  suiviCanvas.style.display = 'none';
+  suiviStatutEl.classList.remove('visible');
+  legendeSuiviEl.classList.remove('visible');
+  grilleEl.style.display = 'grid';
+  suiviCtx.clearRect(0, 0, suiviCanvas.width, suiviCanvas.height);
+}
+
+/* ---- 5. Repli photo unique : une seule détection, sans continuité possible (pas de mouvement à suivre) ---- */
+function suiviAnalysePhotoUnique(img) {
+  suiviReset();
+  frameSourceSuivi = img;
+  frameWSuivi = img.naturalWidth;
+  frameHSuivi = img.naturalHeight;
+  suiviCanvas.style.display = 'block';
+  suiviStatutEl.classList.add('visible');
+  legendeSuiviEl.classList.add('visible');
+  grilleEl.style.display = 'none';
+  suiviAnalyseUneFois();
+  suiviStatutEl.innerHTML += ' · <i>photo unique : aucun suivi de mouvement possible, seulement une détection ponctuelle.</i>';
+}
+preloadSignatures();
+
 </script>
 </body>
 </html>
