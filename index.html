@@ -84,7 +84,7 @@
   .explic b{color:var(--text)}
   #err{display:none;font-size:12px;background:var(--danger-bg);border:1px solid var(--danger-border);color:var(--danger-text);border-radius:8px;padding:8px 10px;margin-top:8px}
   .badge-demo{position:absolute;top:8px;left:8px;background:rgba(0,0,0,.55);color:#fff;font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px;z-index:5}
-  .pr-sec{font-size:12px;font-weight:800;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+  .pr-sec{font-size:12px;font-weight:800;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}  #suiviCanvas{position:absolute;inset:0;width:100%;height:100%;display:none;pointer-events:none}  .legende-suivi{display:none;gap:10px;flex-wrap:wrap;font-size:10.5px;color:var(--text-dim);margin-top:6px}  .legende-suivi.visible{display:flex}  .legende-suivi span{display:flex;align-items:center;gap:4px}  .legende-suivi i{width:12px;height:12px;border-radius:3px;display:inline-block}  .puce-actif{background:#2f6fed}  .puce-incertain{background:#fb8c00}  .puce-ambigu{background:#8e44ad}  .suivi-statut{font-size:12px;color:var(--text-dim);margin-top:4px;display:none}  .suivi-statut.visible{display:block}  .suivi-statut b{color:var(--text)}  #suiviCanvas{position:absolute;inset:0;width:100%;height:100%;display:none;pointer-events:none}  .legende-suivi{display:none;gap:10px;flex-wrap:wrap;font-size:10.5px;color:var(--text-dim);margin-top:6px}  .legende-suivi.visible{display:flex}  .legende-suivi span{display:flex;align-items:center;gap:4px}  .legende-suivi i{width:12px;height:12px;border-radius:3px;display:inline-block}  .puce-actif{background:#2f6fed}  .puce-incertain{background:#fb8c00}  .puce-ambigu{background:#8e44ad}  .suivi-statut{font-size:12px;color:var(--text-dim);margin-top:4px;display:none}  #suiviCanvas{position:absolute;inset:0;width:100%;height:100%;display:none;pointer-events:none}  .legende-suivi{display:none;gap:10px;flex-wrap:wrap;font-size:10.5px;color:var(--text-dim);margin-top:6px}  .legende-suivi.visible{display:flex}  .legende-suivi span{display:flex;align-items:center;gap:4px}  .legende-suivi i{width:12px;height:12px;border-radius:3px;display:inline-block}  .puce-actif{background:#2f6fed}  .puce-incertain{background:#fb8c00}  #suiviCanvas{position:absolute;inset:0;width:100%;height:100%;display:none;pointer-events:none}  .legende-suivi{display:none;gap:10px;flex-wrap:wrap;font-size:10.5px;color:var(--text-dim);margin-top:6px}  .legende-suivi.visible{display:flex}  .legende-suivi span{display:flex;align-items:center;gap:4px}  .legende-suivi i{width:12px;height:12px;border-radius:3px;display:inline-block}  #suiviCanvas{position:absolute;inset:0;width:100%;height:100%;display:none;pointer-events:none}  .legende-suivi{display:none;gap:10px;flex-wrap:wrap;font-size:10.5px;color:var(--text-dim);margin-top:6px}  .legende-suivi.visible{display:flex}  #suiviCanvas{position:absolute;inset:0;width:100%;height:100%;display:none;pointer-events:none}
 </style>
 </head>
 <body>
@@ -99,13 +99,13 @@
       La grille ci-dessous représente 12 emplacements d'un rayon test. Chaque case attend UNE référence précise
       (déjà connue, comme dans l'outil de création de linéaire). Démarre la caméra et pointe-la vers le rayon :
       en continu, une case passe en <b>vert</b> quand la référence attendue est reconnue, elle reste en <b>orange</b>
-      avec « rapproche-toi » tant que ce n'est pas assez net pour être sûr.
+      avec « rapproche-toi » tant que ce n'est pas assez net pour être sûr.</p><p class="explic"><b>🎥 Suivi (nouveau)</b> : ce bouton lance désormais la découverte et le suivi des paquets, sans grille ni catalogue connu à l'avance. Les couleurs des contours indiquent l'état du suivi — <b>bleu</b> = net, <b>orange pointillé</b> = incertain, <b>violet pointillé</b> = identité ambiguë — pas encore la reconnaissance du produit (prochaine étape). <b>▶️ Mode démo</b> reste l'ancien mécanisme, inchangé.
     </p>
   </div>
 
   <div class="carte">
     <div class="row-btns">
-      <button class="btn large" id="btnCam">🎥 Démarrer la caméra</button>
+      <button class="btn large" id="btnCam">🎥 Démarrer la caméra (suivi)</button>
     </div>
     <div class="row-btns" style="margin-top:8px">
       <button class="btn secondaire" id="btnDemo">▶️ Mode démo (sans caméra)</button>
@@ -117,13 +117,13 @@
     <div class="stage" id="stage">
       <video id="video" playsinline muted></video>
       <img class="demoImg" id="demoImg" alt="">
-      <span class="badge-demo" id="badgeDemo" style="display:none">MODE DÉMO</span>
+      <span class="badge-demo" id="badgeDemo" style="display:none">MODE DÉMO</span><canvas id="suiviCanvas"></canvas>
       <div class="grille" id="grille"></div>
     </div>
 
-    <div class="lien-alt">La caméra ne démarre pas ? <button id="btnPhotoAlt" type="button">Prendre une photo à la place</button></div>
+    <div class="legende-suivi" id="legendeSuivi"><span><i class="puce-actif"></i>suivi net</span><span><i class="puce-incertain"></i>incertain</span><span><i class="puce-ambigu"></i>identité ambiguë</span></div><div class="lien-alt">La caméra ne démarre pas ? <button id="btnPhotoAlt" type="button">Prendre une photo à la place</button></div>
 
-    <div class="statut" id="statut">En attente — démarre la caméra ou le mode démo.</div>
+    <div class="statut" id="statut">En attente — démarre la caméra ou le mode démo.</div><div class="suivi-statut" id="suiviStatut"></div>
   </div>
 
   <div class="carte">
@@ -283,7 +283,7 @@ async function startCamera() {
     running = true;
     document.getElementById('btnStop').disabled = false;
     document.getElementById('btnCam').disabled = true;
-    startLoop();
+    suiviArreter();suiviDemarrer();
   } catch (e) {
     errEl.style.display = 'block';
     errEl.textContent = '🚫 Caméra inaccessible : ' + (e.message || e.name) + '. Tu peux utiliser "Prendre une photo à la place" ci-dessous.';
@@ -330,7 +330,7 @@ document.getElementById('btnPhotoAlt').onclick = () => fileCam.click();
    du catalogue, pour montrer le mécanisme même avant d'être devant le vrai rayon. ===== */
 let demoTimer = null, demoStep = 0;
 function startDemo() {
-  stopCamera(); document.getElementById('btnCam').disabled = false;
+  stopCamera(); suiviArreter(); document.getElementById('btnCam').disabled = false; grilleEl.style.display='grid';
   document.getElementById('badgeDemo').style.display = 'block';
   video.style.display = 'none'; demoImg.style.display = 'block';
   document.getElementById('btnStop').disabled = false;
@@ -378,13 +378,13 @@ function stopDemo() {
 document.getElementById('btnCam').onclick = startCamera;
 document.getElementById('btnDemo').onclick = () => { document.getElementById('btnDemo').disabled = true; startDemo(); };
 document.getElementById('btnStop').onclick = () => {
-  running = false; stopLoop(); stopCamera(); stopDemo();
+  running = false; stopLoop(); stopCamera(); stopDemo(); suiviArreter();
   document.getElementById('btnCam').disabled = false; document.getElementById('btnDemo').disabled = false;
   document.getElementById('btnStop').disabled = true;
   video.style.display = 'block'; demoImg.style.display = 'none'; demoImg.removeAttribute('src');
 };
 
-preloadSignatures();
+/* ===== SUIVI DE PAQUETS SANS GRILLE (nouvelle fonctionnalite) ===== Contrairement au mode demo ci-dessus (grille fixe de 12 cases, comparees a 12 references connues a l'avance), ce bloc ne connait RIEN du rayon : il decouvre les paquets visibles a l'ecran et les suit d'image en image pendant que le telephone bouge, sans supposer ni grille, ni nombre de produits, ni ordre attendu. La reconnaissance de la reference precise arrive dans une prochaine mission : ici, un contour represente seulement un paquet physique que la camera suit, pas encore je sais lequel c'est. Methode : 1) DETECTION par image reduite -> contraste local -> zones de faible contraste regroupees par voisinage (flood fill) en candidats rectangulaires, filtres par taille et forme. 2) SUIVI d'une image a l'autre : chaque candidat est rapproche des paquets deja suivis par position (chevauchement de zone) ET par apparence (meme hachage dHash + couleur moyenne que le mode demo). 3) MEMOIRE courte : un paquet qui sort du cadre reste en memoire quelques secondes ; s'il revient et que son apparence correspond nettement a un seul candidat en memoire, on lui redonne la meme identite au lieu de le recompter. En cas d'ambiguite, l'identite n'est jamais devinee : le paquet recoit un contour ambigu distinct. Reglages de premiere version, a ajuster apres test sur un vrai rayon. */
 </script>
 </body>
 </html>
