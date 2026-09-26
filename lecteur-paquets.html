@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lecteur de paquets</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #111; color: #eee; min-height: 100vh; display: flex; flex-direction: column;
+  }
+  #camWrap { position: relative; width: 100%; aspect-ratio: 3/4; background: #000; overflow: hidden; }
+  video, #flashImg { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #flashImg { position: absolute; inset: 0; display: none; }
+  #overlay {
+    position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    background: linear-gradient(transparent, rgba(0,0,0,0.75) 40%);
+  }
+  #statut { font-size: 15px; min-height: 22px; margin-bottom: 8px; }
+  .badge { display: inline-block; padding: 6px 12px; border-radius: 8px; font-weight: 600; font-size: 14px; }
+  .badge.ok { background: #1e8e3e; color: #fff; }
+  .badge.douteux { background: #e8710a; color: #fff; }
+  .badge.attente { background: #444; color: #ccc; }
+  #nomLu { font-size: 20px; font-weight: 700; margin: 6px 0 2px; }
+  #raison { font-size: 13px; color: #ccc; margin-bottom: 10px; }
+  #controls { display: flex; gap: 10px; padding: 14px 16px calc(14px + env(safe-area-inset-bottom)); background: #000; }
+  button {
+    flex: 1; padding: 16px; border: none; border-radius: 12px; font-size: 17px; font-weight: 700;
+    background: #2563eb; color: #fff;
+  }
+  button:disabled { background: #555; }
+  button.secondaire { background: #333; }
+  #historique { flex: 1; overflow-y: auto; padding: 10px 14px 30px; }
+  #historique h2 { font-size: 14px; color: #999; font-weight: 600; margin: 6px 0 10px; }
+  .ligne {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 12px; border-radius: 10px; margin-bottom: 8px; background: #1c1c1c;
+    border-left: 4px solid #444;
+  }
+  .ligne.ok { border-left-color: #1e8e3e; }
+  .ligne.douteux { border-left-color: #e8710a; }
+  .ligne .nom { font-weight: 600; font-size: 14px; }
+  .ligne .ref { font-size: 12px; color: #999; }
+  .ligne .pastille { font-size: 11px; padding: 3px 8px; border-radius: 6px; }
+  .ligne.ok .pastille { background: #1e8e3e33; color: #4ade80; }
+  .ligne.douteux .pastille { background: #e8710a33; color: #fb923c; }
+</style>
+</head>
+<body>
+
+<div id="camWrap">
+  <video id="video" autoplay playsinline muted></video>
+  <img id="flashImg" alt="capture">
+  <div id="overlay">
+    <div id="statut"><span class="badge attente">Prêt</span></div>
+    <div id="nomLu"></div>
+    <div id="raison"></div>
+  </div>
+</div>
+
+<div id="controls">
+  <button id="btnAnalyser">📷 Analyser ce paquet</button>
+  <button id="btnReset" class="secondaire" style="flex:0 0 90px;">Effacer</button>
+</div>
+
+<div id="historique">
+  <h2>Paquets scannés cette session</h2>
+  <div id="liste"></div>
+</div>
+
+<canvas id="canvas" style="display:none;"></canvas>
+
+<script>
+// >>> À MODIFIER : mets ici l'URL de ton Worker Cloudflare une fois déployé <<<
+const URL_WORKER = "https://TON-WORKER.ton-compte.workers.dev";
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const flashImg = document.getElementById("flashImg");
+const btnAnalyser = document.getElementById("btnAnalyser");
+const btnReset = document.getElementById("btnReset");
+const statutEl = document.getElementById("statut");
+const nomLuEl = document.getElementById("nomLu");
+const raisonEl = document.getElementById("raison");
+const listeEl = document.getElementById("liste");
+
+let historique = [];
+
+async function demarrerCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 960 } },
+      audio: false,
+    });
+    video.srcObject = stream;
+  } catch (e) {
+    statutEl.innerHTML = '<span class="badge douteux">Caméra inaccessible : ' + e.message + '</span>';
+  }
+}
+demarrerCamera();
+
+function afficherStatut(type, texte) {
+  const classe = type === "ok" ? "ok" : type === "douteux" ? "douteux" : "attente";
+  statutEl.innerHTML = `<span class="badge ${classe}">${texte}</span>`;
+}
+
+function ajouterHistorique(res) {
+  const estOk = res.confiance === "sur" && res.correspondance_catalogue;
+  const item = {
+    nom: res.nom_lu || "(illisible)",
+    ref: res.correspondance_catalogue ? res.correspondance_catalogue.ref : null,
+    ok: estOk,
+  };
+  historique.unshift(item);
+  render();
+}
+
+function render() {
+  listeEl.innerHTML = historique.map(it => `
+    <div class="ligne ${it.ok ? 'ok' : 'douteux'}">
+      <div>
+        <div class="nom">${it.nom}</div>
+        ${it.ref ? `<div class="ref">réf. ${it.ref}</div>` : `<div class="ref">non retrouvé au catalogue</div>`}
+      </div>
+      <div class="pastille">${it.ok ? '✓ sûr' : '? à vérifier'}</div>
+    </div>
+  `).join("");
+}
+
+btnReset.onclick = () => {
+  historique = [];
+  render();
+  afficherStatut("attente", "Prêt");
+  nomLuEl.textContent = "";
+  raisonEl.textContent = "";
+  flashImg.style.display = "none";
+  video.style.display = "block";
+};
+
+btnAnalyser.onclick = async () => {
+  if (URL_WORKER.includes("TON-WORKER")) {
+    afficherStatut("douteux", "Configure d'abord URL_WORKER dans index.html");
+    return;
+  }
+  btnAnalyser.disabled = true;
+  afficherStatut("attente", "Capture...");
+
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext("2d").drawImage(video, 0, 0);
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+  flashImg.src = dataUrl;
+  flashImg.style.display = "block";
+  video.style.display = "none";
+  const base64 = dataUrl.split(",")[1];
+
+  afficherStatut("attente", "Lecture en cours...");
+  nomLuEl.textContent = "";
+  raisonEl.textContent = "";
+
+  try {
+    const resp = await fetch(URL_WORKER, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_base64: base64, media_type: "image/jpeg" }),
+    });
+    const res = await resp.json();
+
+    if (res.erreur) {
+      afficherStatut("douteux", "Erreur : " + res.erreur);
+    } else if (res.confiance === "sur" && res.correspondance_catalogue) {
+      afficherStatut("ok", "Sûr — trouvé au catalogue");
+      nomLuEl.textContent = res.correspondance_catalogue.nom;
+      raisonEl.textContent = "réf. " + res.correspondance_catalogue.ref;
+    } else if (res.confiance === "sur") {
+      afficherStatut("douteux", "Lu, mais absent du catalogue");
+      nomLuEl.textContent = res.nom_lu || "(vide)";
+      raisonEl.textContent = res.raison;
+    } else {
+      afficherStatut("douteux", "Pas sûr — montre-moi mieux ce paquet");
+      nomLuEl.textContent = res.nom_lu ? "Peut-être : " + res.nom_lu : "";
+      raisonEl.textContent = res.raison;
+    }
+    ajouterHistorique(res);
+  } catch (e) {
+    afficherStatut("douteux", "Échec de connexion : " + e.message);
+  }
+
+  btnAnalyser.disabled = false;
+  setTimeout(() => {
+    flashImg.style.display = "none";
+    video.style.display = "block";
+  }, 1500);
+};
+</script>
+</body>
+</html>
