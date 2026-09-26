@@ -892,6 +892,7 @@ function suiviAnalyseUneFois() {
       t.etat = 'actif';
       t.id = suiviProchainId++;
       suiviIdsVusUneFois++;
+      t._nouveauCompte = true;
     } else if (t.etat !== 'ambigu') {
       t.etat = 'actif';
     }
@@ -924,9 +925,23 @@ function suiviAnalyseUneFois() {
   suiviPerdusRecents = suiviPerdusRecents.filter(p => maintenant - p.perduA < SUIVI_MEMOIRE_MS);
 
   // 2.4 détections non appariées : ré-identification depuis la mémoire, ou nouvelle détection "en observation"
+  const suiviAireBB = (b) => b.w * b.h;
+  const suiviChevaucheTrackExistant = (bb) => {
+    for (const t of suiviTracks) {
+      const ix1 = Math.max(bb.x, t.bbox.x), iy1 = Math.max(bb.y, t.bbox.y);
+      const ix2 = Math.min(bb.x + bb.w, t.bbox.x + t.bbox.w), iy2 = Math.min(bb.y + bb.h, t.bbox.y + t.bbox.h);
+      const iw = Math.max(0, ix2 - ix1), ih = Math.max(0, iy2 - iy1);
+      const inter = iw * ih;
+      if (inter <= 0) continue;
+      if (inter / Math.min(suiviAireBB(bb), suiviAireBB(t.bbox)) > 0.55) return true;
+    }
+    return false;
+  };
   for (let di = 0; di < detections.length; di++) {
     if (detAssignee.has(di)) continue;
     const d = detections[di];
+    // ce fragment recouvre déjà un paquet suivi cette image : on ne lui laisse pas créer un doublon
+    if (suiviChevaucheTrackExistant(d.bbox)) continue;
     let meilleur = null, meilleurScore = -1, second = -1;
     for (const p of suiviPerdusRecents) {
       const s = similarity(p.sig, d.sig);
@@ -940,7 +955,7 @@ function suiviAnalyseUneFois() {
       suiviTracks.push(track);
     } else if (meilleur && meilleurScore >= SUIVI_SEUIL_REID) {
       // ressemble fortement à plusieurs souvenirs à la fois (ex. deux paquets identiques) : on ne devine pas
-      const track = { id: suiviProchainId++, bbox: d.bbox, prevBbox: null, sig: d.sig, framesSansDetection: 0, etat: 'ambigu' };
+      const track = { id: suiviProchainId++, bbox: d.bbox, prevBbox: null, sig: d.sig, framesSansDetection: 0, etat: 'ambigu', _nouveauCompte: true };
       suiviIdsVusUneFois++;
       suiviTracks.push(track);
     } else {
@@ -949,6 +964,36 @@ function suiviAnalyseUneFois() {
       const track = { id: null, bbox: d.bbox, prevBbox: null, sig: d.sig, framesSansDetection: 0, etat: 'observation' };
       suiviTracks.push(track);
     }
+  }
+
+  // 2.5 filet de sécurité : deux pistes qui se recouvrent fortement au même endroit désignent
+  // presque sûrement le même objet physique mal séparé en deux fragments — on n'en garde qu'une.
+  {
+    const aireBB = (b) => b.w * b.h;
+    const recouvrement = (a, b) => {
+      const ix1 = Math.max(a.x, b.x), iy1 = Math.max(a.y, b.y);
+      const ix2 = Math.min(a.x + a.w, b.x + b.w), iy2 = Math.min(a.y + a.h, b.y + b.h);
+      const iw = Math.max(0, ix2 - ix1), ih = Math.max(0, iy2 - iy1);
+      const inter = iw * ih;
+      if (inter <= 0) return 0;
+      return inter / Math.min(aireBB(a), aireBB(b));
+    };
+    const supprimes = new Set();
+    for (let i = 0; i < suiviTracks.length; i++) {
+      if (supprimes.has(i)) continue;
+      for (let j = i + 1; j < suiviTracks.length; j++) {
+        if (supprimes.has(j)) continue;
+        if (recouvrement(suiviTracks[i].bbox, suiviTracks[j].bbox) <= 0.55) continue;
+        const a = suiviTracks[i], b = suiviTracks[j];
+        let perdant = j;
+        if (a.etat === 'observation' && b.etat !== 'observation') perdant = i;
+        else if (b.etat === 'observation' && a.etat !== 'observation') perdant = j;
+        else if (a.id != null && b.id != null) perdant = (a.id <= b.id) ? j : i;
+        supprimes.add(perdant);
+        if (suiviTracks[perdant]._nouveauCompte) suiviIdsVusUneFois = Math.max(0, suiviIdsVusUneFois - 1);
+      }
+    }
+    if (supprimes.size) suiviTracks = suiviTracks.filter((_, i) => !supprimes.has(i));
   }
 
   suiviDessiner();
