@@ -475,12 +475,12 @@ const SUIVI_FUSION_DIM_MAX  = 0.5;   // une fusion qui s'étire sur plus de cett
 const SUIVI_CELLULE_TEXTURE = 6;     // taille (px, image réduite) des cellules utilisées pour repérer les zones "texturées" (étiquettes imprimées) plutôt que "plates"
 const SUIVI_COULEUR_SEUIL   = 45;    // écart de couleur moyenne au-delà duquel deux cellules texturées voisines ne sont pas regroupées (évite de fusionner deux paquets adjacents de couleurs différentes en un seul candidat)
 const SUIVI_DEDOUBLONNAGE_IOU = 0.5; // au-delà de ce recouvrement, un candidat "texture" et un candidat "plat" sont considérés comme le même paquet physique (on ne garde que le plus grand)
-const SUIVI_GRACE_FRAMES    = 3;     // nombre d'analyses sans détection avant de passer "incertain" puis "perdu" (paquets déjà confirmés)
+const SUIVI_GRACE_FRAMES    = 6;     // nombre d'analyses sans détection avant de passer "incertain" puis "perdu" (paquets déjà confirmés)
 const SUIVI_MEMOIRE_MS      = 15000; // durée pendant laquelle un paquet "perdu" reste en mémoire pour une ré-identification
-const SUIVI_SEUIL_REID      = 0.78;  // similarité minimale pour redonner une identité à un paquet revenu dans le cadre
-const SUIVI_MARGE_REID      = 0.05;  // écart minimal entre le meilleur et le second meilleur candidat pour trancher sans ambiguïté
+const SUIVI_SEUIL_REID      = 0.62;  // similarité minimale pour redonner une identité à un paquet revenu dans le cadre
+const SUIVI_MARGE_REID      = 0.08;  // écart minimal entre le meilleur et le second meilleur candidat pour trancher sans ambiguïté
 const SUIVI_SEUIL_APPARIEMENT = 0.30; // score minimal (position + apparence) pour rattacher une détection à un suivi existant
-const SUIVI_ELARGISSEMENT   = 0.9;   // agrandissement de la fenêtre de recherche autour de la position prévue (tolère un mouvement de caméra imparfaitement prédit)
+const SUIVI_ELARGISSEMENT   = 1.2;   // agrandissement de la fenêtre de recherche autour de la position prévue (tolère un mouvement de caméra imparfaitement prédit)
 const SUIVI_AMORTI_VITESSE  = 0.6;   // amortissement de l'extrapolation de mouvement (évite de sur-réagir à une mesure bruitée)
 
 let suiviTimer = null;
@@ -921,25 +921,35 @@ function suiviDessiner() {
   suiviCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   suiviCtx.clearRect(0, 0, geo.rect.width, geo.rect.height);
 
-  const dessinerBoite = (bbox, couleur, tirets, label) => {
-    const x = bbox.x * frameWSuivi * geo.echelle + geo.offX;
-    const y = bbox.y * frameHSuivi * geo.echelle + geo.offY;
-    const w = bbox.w * frameWSuivi * geo.echelle;
-    const h = bbox.h * frameHSuivi * geo.echelle;
-    suiviCtx.lineWidth = 2.5;
-    suiviCtx.strokeStyle = couleur;
-    suiviCtx.setLineDash(tirets);
-    suiviCtx.strokeRect(x, y, w, h);
-    suiviCtx.setLineDash([]);
-    suiviCtx.font = '700 11px -apple-system, sans-serif';
-    const tw = suiviCtx.measureText(label).width;
-    suiviCtx.fillStyle = couleur;
-    suiviCtx.fillRect(x, Math.max(0, y - 16), tw + 8, 16);
-    suiviCtx.fillStyle = '#fff';
-    suiviCtx.fillText(label, x + 4, Math.max(11, y - 4));
-  };
-
-  for (const t of suiviTracks) {
+  const etiquettesPosees = [];
+    const chevauche = (a, b) => !(a.x2 <= b.x1 || b.x2 <= a.x1 || a.y2 <= b.y1 || b.y2 <= a.y1);
+    const dessinerBoite = (bbox, couleur, tirets, label) => {
+      const x = bbox.x * frameWSuivi * geo.echelle + geo.offX;
+      const y = bbox.y * frameHSuivi * geo.echelle + geo.offY;
+      const w = bbox.w * frameWSuivi * geo.echelle;
+      const h = bbox.h * frameHSuivi * geo.echelle;
+      suiviCtx.lineWidth = 2.5;
+      suiviCtx.strokeStyle = couleur;
+      suiviCtx.setLineDash(tirets);
+      suiviCtx.strokeRect(x, y, w, h);
+      suiviCtx.setLineDash([]);
+      suiviCtx.font = '700 11px -apple-system, sans-serif';
+      const tw = suiviCtx.measureText(label).width;
+      let ly = Math.max(0, y - 16);
+      // évite que deux étiquettes voisines se chevauchent et deviennent illisibles (paquets proches les uns des autres)
+      let essai = 0;
+      while (essai < 8 && etiquettesPosees.some(r => chevauche(r, { x1: x, x2: x + tw + 8, y1: ly, y2: ly + 16 }))) {
+        ly += 16;
+        essai++;
+      }
+      etiquettesPosees.push({ x1: x, x2: x + tw + 8, y1: ly, y2: ly + 16 });
+      suiviCtx.fillStyle = couleur;
+      suiviCtx.fillRect(x, ly, tw + 8, 16);
+      suiviCtx.fillStyle = '#fff';
+      suiviCtx.fillText(label, x + 4, ly + 12);
+    };
+  
+    for (const t of suiviTracks) {
     if (t.etat === 'actif') dessinerBoite(t.bbox, '#2f6fed', [], `#${t.id}`);
     else if (t.etat === 'incertain') dessinerBoite(t.bbox, '#fb8c00', [6, 4], `#${t.id} ?`);
     else if (t.etat === 'ambigu') dessinerBoite(t.bbox, '#8e44ad', [2, 3], `#${t.id} ambigu`);
