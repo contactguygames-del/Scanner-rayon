@@ -385,8 +385,9 @@ document.getElementById('btnStop').onclick = () => {
 };
 
 
+
 /* ==========================================================================
-   SUIVI DE PAQUETS SANS GRILLE (nouvelle fonctionnalité)
+   SUIVI DE PAQUETS SANS GRILLE (nouvelle fonctionnalité) — v2
    --------------------------------------------------------------------------
    Contrairement au mode démo ci-dessus (grille fixe de 12 cases, comparées
    à 12 références connues à l'avance), ce bloc ne connaît RIEN du rayon :
@@ -396,23 +397,51 @@ document.getElementById('btnStop').onclick = () => {
    (quel produit exact) arrive dans une prochaine mission : ici, un contour
    représente seulement "un paquet physique que la caméra suit", pas encore
    "je sais lequel c'est".
+   CORRECTION v2 (suite à un test réel sur boîtes) : la version précédente
+   affichait 9 contours à l'écran mais avait déjà créé 102 identités, et
+   encadrait le meuble, des bouteilles et du vide en "suivi net". Deux
+   défauts corrigés ici :
+   1) Le détecteur acceptait n'importe quelle zone plate comme candidat,
+      y compris de grandes surfaces de fond (meuble, mur) qui débordent du
+      cadre sur plusieurs côtés : on rejette maintenant les candidats qui
+      touchent 2 côtés ou plus de l'image analysée.
+   2) Le suivi exigeait un recouvrement de zone strictement positif entre
+      la position prévue et la détection pour rattacher un paquet ; un
+      mouvement de caméra normal suffisait à faire perdre ce recouvrement
+      en une seule mesure (300 ms), donc à fermer puis rouvrir une identité
+      à chaque déplacement. La fenêtre de recherche est maintenant élargie
+      et amortie. Une nouvelle détection ne devient une identité comptée
+      qu'après avoir été revue une seconde fois à une position cohérente
+      ("en observation", gris pointillé) — un flash isolé (reflet, bruit)
+      ne crée donc plus d'identité.
+   3) Un paquet imprimé (étiquette, logo, fond de couleur différente) se
+      fragmente souvent en plusieurs zones plates adjacentes à la détection ;
+      chaque fragment pouvait devenir sa propre identité. Les fragments très
+      proches ou qui se touchent sont maintenant refusionnés en un seul
+      candidat avant le suivi.
    Méthode utilisée (aucune bibliothèque, aucun modèle à télécharger) :
    1) DÉTECTION par image : image réduite → contraste local (gradient) →
       les zones de faible contraste ("intérieur plat" d'un paquet) sont
       regroupées par voisinage (flood fill) en candidats rectangulaires,
-      filtrés par taille et forme.
+      filtrés par taille, forme et bords touchés.
    2) SUIVI d'une image à l'autre : chaque candidat est rapproché des
-      paquets déjà suivis par position (chevauchement de zone) ET par
-      apparence (le même hachage dHash + couleur moyenne que le mode démo),
-      pour rester attaché au bon paquet physique même si le cadrage bouge.
-   3) MÉMOIRE courte : un paquet qui sort du cadre reste en mémoire
-      quelques secondes ; s'il revient et que son apparence correspond
-      nettement à un seul candidat en mémoire, on lui redonne la même
-      identité au lieu de le recompter. En cas d'ambiguïté (deux paquets
-      qui se ressemblent trop, ex. deux emballages identiques), l'identité
-      n'est jamais devinée : le paquet reçoit un contour "ambigu" distinct.
-   Ce sont des réglages de première version, à ajuster après le test sur un
-   vrai rayon (voir le compte-rendu livré avec cette mission).
+      paquets déjà suivis par position (fenêtre élargie autour de la
+      position prévue) ET par apparence (le même hachage dHash + couleur
+      moyenne que le mode démo), pour rester attaché au bon paquet
+      physique même si le cadrage bouge.
+   3) CONFIRMATION : une détection qui ne correspond à rien de connu
+      devient "en observation" (grise) et n'est comptée comme identité
+      que si elle est revue une seconde fois de suite à une position
+      cohérente ; sinon elle est abandonnée sans laisser de trace.
+   4) MÉMOIRE courte : un paquet confirmé qui sort du cadre reste en
+      mémoire quelques secondes ; s'il revient et que son apparence
+      correspond nettement à un seul candidat en mémoire, on lui redonne
+      la même identité au lieu de le recompter. En cas d'ambiguïté (deux
+      paquets qui se ressemblent trop, ex. deux emballages identiques),
+      l'identité n'est jamais devinée : le paquet reçoit un contour
+      "ambigu" distinct.
+   Ce sont des réglages ajustés une première fois après un test réel ; ils
+   restent à affiner après le prochain test sur un vrai rayon.
    ========================================================================== */
 
 const SUIVI_LARGEUR_ANALYSE = 220;   // largeur (px) de l'image réduite utilisée pour la détection : compromis vitesse/précision
@@ -421,17 +450,22 @@ const SUIVI_SEUIL_GRADIENT  = 18;    // au-dessus de ce contraste local, un pixe
 const SUIVI_AIRE_MIN        = 0.006; // un blob plus petit que 0,6 % de l'image analysée est ignoré (bruit)
 const SUIVI_AIRE_MAX        = 0.55;  // un blob plus grand que 55 % de l'image est probablement le fond du rayon
 const SUIVI_RATIO_MAX       = 4.2;   // un blob trop filiforme (largeur/hauteur ou inverse) est rejeté
-const SUIVI_GRACE_FRAMES    = 3;     // nombre d'analyses sans détection avant de passer "incertain" puis "perdu"
+const SUIVI_BORDS_MAX       = 1;     // un blob qui touche plus de ce nombre de côtés de l'image est probablement du fond (meuble, mur) et non un paquet
+const SUIVI_FUSION_MARGE    = 0.02;  // proximité (fraction de la plus petite dimension analysée) en dessous de laquelle deux zones plates voisines sont fusionnées en un seul candidat (évite qu'un paquet imprimé se fragmente en plusieurs identités)
+const SUIVI_FUSION_AIRE_MAX = 0.25;  // une zone déjà plus grande que ça à elle seule n'est pas un simple fragment d'un petit objet : elle ne participe pas à la fusion
+const SUIVI_GRACE_FRAMES    = 3;     // nombre d'analyses sans détection avant de passer "incertain" puis "perdu" (paquets déjà confirmés)
 const SUIVI_MEMOIRE_MS      = 15000; // durée pendant laquelle un paquet "perdu" reste en mémoire pour une ré-identification
 const SUIVI_SEUIL_REID      = 0.78;  // similarité minimale pour redonner une identité à un paquet revenu dans le cadre
 const SUIVI_MARGE_REID      = 0.05;  // écart minimal entre le meilleur et le second meilleur candidat pour trancher sans ambiguïté
 const SUIVI_SEUIL_APPARIEMENT = 0.30; // score minimal (position + apparence) pour rattacher une détection à un suivi existant
+const SUIVI_ELARGISSEMENT   = 0.9;   // agrandissement de la fenêtre de recherche autour de la position prévue (tolère un mouvement de caméra imparfaitement prédit)
+const SUIVI_AMORTI_VITESSE  = 0.6;   // amortissement de l'extrapolation de mouvement (évite de sur-réagir à une mesure bruitée)
 
 let suiviTimer = null;
-let suiviTracks = [];           // paquets actuellement suivis ou en grâce (visibles ou tout juste sortis du cadre)
-let suiviPerdusRecents = [];    // paquets déclarés "perdus", gardés en mémoire courte pour ré-identification
+let suiviTracks = [];           // paquets actuellement suivis, en observation ou en grâce (visibles ou tout juste sortis du cadre)
+let suiviPerdusRecents = [];    // paquets confirmés puis déclarés "perdus", gardés en mémoire courte pour ré-identification
 let suiviProchainId = 1;
-let suiviIdsVusUneFois = 0;     // compteur d'identités distinctes créées depuis le début du suivi (preuve : pas de double comptage)
+let suiviIdsVusUneFois = 0;     // compteur d'identités CONFIRMÉES distinctes créées depuis le début du suivi (preuve : pas de double comptage)
 let frameSourceSuivi = null, frameWSuivi = 0, frameHSuivi = 0;
 
 const stageEl = document.getElementById('stage');
@@ -449,7 +483,7 @@ function suiviReset() {
   suiviStatutEl.textContent = '';
 }
 
-/* ---- 1. Détection : zones plates candidates à être un paquet ---- */
+/* ---- 1. Détection : zones plates candidates à être un paquet, en excluant les grandes surfaces de fond ---- */
 function suiviDetecterBlobs(source, srcW, srcH) {
   if (!srcW || !srcH) return [];
   const w = SUIVI_LARGEUR_ANALYSE;
@@ -479,7 +513,7 @@ function suiviDetecterBlobs(source, srcW, srcH) {
   for (let y = 0; y < h; y++) { bord[y * w] = 1; bord[y * w + w - 1] = 1; }
 
   const vu = new Uint8Array(w * h);
-  const blobs = [];
+  const bruts = [];
   const pileX = new Int32Array(w * h);
   const pileY = new Int32Array(w * h);
   for (let y = 0; y < h; y++) {
@@ -501,15 +535,70 @@ function suiviDetecterBlobs(source, srcW, srcH) {
         if (cy + 1 < h) { const ni = (cy + 1) * w + cx; if (!vu[ni] && !bord[ni]) { vu[ni] = 1; pileX[sp] = cx; pileY[sp] = cy + 1; sp++; } }
         if (cy - 1 >= 0) { const ni = (cy - 1) * w + cx; if (!vu[ni] && !bord[ni]) { vu[ni] = 1; pileX[sp] = cx; pileY[sp] = cy - 1; sp++; } }
       }
-      const bw = maxX - minX + 1, bh = maxY - minY + 1;
-      const aire = n / (w * h);
-      const ratio = Math.max(bw / bh, bh / bw);
-      if (aire < SUIVI_AIRE_MIN || aire > SUIVI_AIRE_MAX) continue;
-      if (ratio > SUIVI_RATIO_MAX) continue;
-      blobs.push({ x: minX / w, y: minY / h, w: bw / w, h: bh / h });
+      if (n < 4) continue; // quelques pixels isolés : bruit pur, jamais un objet
+      bruts.push({ minX, maxX, minY, maxY });
     }
   }
+
+  // un paquet imprimé (logo, étiquette, fond de couleur différente) se fragmente souvent en plusieurs
+  // zones plates adjacentes à ce stade ; on les refusionne si elles se touchent ou sont très proches,
+  // pour ne pas suivre un seul paquet physique comme si c'étaient plusieurs objets différents.
+  // Une zone déjà grande à elle seule (meuble, mur) n'est pas un simple fragment : elle n'entre pas
+  // dans la fusion, sinon elle "absorberait" tous les petits candidats voisins de son immense boîte
+  // englobante et transformerait tout le cadre en un seul candidat.
+  const candidatsFusion = [], horsFusion = [];
+  for (const b of bruts) {
+    const bw = b.maxX - b.minX + 1, bh = b.maxY - b.minY + 1;
+    const aire = (bw * bh) / (w * h);
+    if (aire > SUIVI_FUSION_AIRE_MAX) horsFusion.push(b); else candidatsFusion.push(b);
+  }
+  const fusionnes = suiviFusionnerBoites(candidatsFusion, w, h).concat(horsFusion);
+
+  const blobs = [];
+  for (const bb of fusionnes) {
+    const bw = bb.maxX - bb.minX + 1, bh = bb.maxY - bb.minY + 1;
+    const aire = (bw * bh) / (w * h);
+    const ratio = Math.max(bw / bh, bh / bw);
+    if (aire < SUIVI_AIRE_MIN || aire > SUIVI_AIRE_MAX) continue;
+    if (ratio > SUIVI_RATIO_MAX) continue;
+    // un paquet posé sur un rayon, vu d'assez près pour être identifiable, ne touche normalement pas
+    // plus d'un côté du cadre à la fois ; une zone plate qui touche 2 côtés ou plus (meuble, mur,
+    // plan de travail) se prolonge presque toujours hors de l'image et n'est pas un objet isolé.
+    let cotesTouches = 0;
+    if (bb.minX <= 1) cotesTouches++;
+    if (bb.maxX >= w - 2) cotesTouches++;
+    if (bb.minY <= 1) cotesTouches++;
+    if (bb.maxY >= h - 2) cotesTouches++;
+    if (cotesTouches > SUIVI_BORDS_MAX) continue;
+    blobs.push({ x: bb.minX / w, y: bb.minY / h, w: bw / w, h: bh / h });
+  }
   return blobs;
+}
+
+function suiviFusionnerBoites(bruts, w, h) {
+  const marge = Math.max(2, Math.round(Math.min(w, h) * SUIVI_FUSION_MARGE));
+  let boites = bruts.map(b => ({ minX: b.minX, maxX: b.maxX, minY: b.minY, maxY: b.maxY }));
+  let refait = true;
+  while (refait) {
+    refait = false;
+    for (let i = 0; i < boites.length && !refait; i++) {
+      for (let j = i + 1; j < boites.length; j++) {
+        const a = boites[i], b = boites[j];
+        const proche = (a.minX - marge <= b.maxX) && (b.minX - marge <= a.maxX) &&
+                       (a.minY - marge <= b.maxY) && (b.minY - marge <= a.maxY);
+        if (proche) {
+          boites[i] = {
+            minX: Math.min(a.minX, b.minX), maxX: Math.max(a.maxX, b.maxX),
+            minY: Math.min(a.minY, b.minY), maxY: Math.max(a.maxY, b.maxY),
+          };
+          boites.splice(j, 1);
+          refait = true;
+          break;
+        }
+      }
+    }
+  }
+  return boites;
 }
 
 function suiviSignatureDeBlob(source, srcW, srcH, blob) {
@@ -531,14 +620,23 @@ function suiviIoU(a, b) {
   return union > 0 ? inter / union : 0;
 }
 
+// position prévue de la prochaine détection, en amortissant l'extrapolation pour ne pas sur-réagir à une seule mesure bruitée
 function suiviBboxPrevu(track) {
   if (!track.prevBbox) return track.bbox;
-  const vx = track.bbox.x - track.prevBbox.x;
-  const vy = track.bbox.y - track.prevBbox.y;
+  const vx = (track.bbox.x - track.prevBbox.x) * SUIVI_AMORTI_VITESSE;
+  const vy = (track.bbox.y - track.prevBbox.y) * SUIVI_AMORTI_VITESSE;
   return { x: track.bbox.x + vx, y: track.bbox.y + vy, w: track.bbox.w, h: track.bbox.h };
 }
 
-/* ---- 2. Une passe d'analyse : détecte, apparie aux suivis existants, gère mémoire et nouvelles identités ---- */
+// fenêtre de recherche élargie autour d'une position prévue, pour tolérer un mouvement de caméra
+// plus rapide ou moins régulier que ce que la simple extrapolation linéaire prévoit
+function suiviBboxElargie(bbox, marge) {
+  const cx = bbox.x + bbox.w / 2, cy = bbox.y + bbox.h / 2;
+  const w = bbox.w * (1 + marge), h = bbox.h * (1 + marge);
+  return { x: cx - w / 2, y: cy - h / 2, w, h };
+}
+
+/* ---- 2. Une passe d'analyse : détecte, apparie aux suivis existants, confirme, gère mémoire et nouvelles identités ---- */
 function suiviAnalyseUneFois() {
   if (!frameSourceSuivi || !frameWSuivi || !frameHSuivi) return;
 
@@ -549,15 +647,16 @@ function suiviAnalyseUneFois() {
     if (sig) detections.push({ bbox: b, sig });
   }
 
-  // 2.1 appariement des suivis existants (actifs ou en grâce) avec les détections de cette image
+  // 2.1 appariement des suivis existants (confirmés ou en observation) avec les détections de cette image,
+  //     dans une fenêtre de recherche élargie autour de la position prévue
   const paires = [];
   for (let ti = 0; ti < suiviTracks.length; ti++) {
-    const prevu = suiviBboxPrevu(suiviTracks[ti]);
+    const prevu = suiviBboxElargie(suiviBboxPrevu(suiviTracks[ti]), SUIVI_ELARGISSEMENT);
     for (let di = 0; di < detections.length; di++) {
       const iou = suiviIoU(prevu, detections[di].bbox);
       if (iou <= 0) continue;
       const app = similarity(suiviTracks[ti].sig, detections[di].sig);
-      paires.push({ ti, di, score: 0.65 * iou + 0.35 * app });
+      paires.push({ ti, di, score: 0.5 * iou + 0.5 * app });
     }
   }
   paires.sort((a, b) => b.score - a.score);
@@ -574,18 +673,32 @@ function suiviAnalyseUneFois() {
     };
     t.sig = d.sig;
     t.framesSansDetection = 0;
-    if (t.etat !== 'ambigu') t.etat = 'actif';
+    if (t.etat === 'observation') {
+      // deuxième détection cohérente de suite : on confirme l'identité, seulement maintenant elle compte
+      t.etat = 'actif';
+      t.id = suiviProchainId++;
+      suiviIdsVusUneFois++;
+    } else if (t.etat !== 'ambigu') {
+      t.etat = 'actif';
+    }
   }
 
-  // 2.2 suivis non retrouvés cette fois-ci : grâce, puis perte
+  // 2.2 suivis non retrouvés cette fois-ci
+  const conserves = [];
   for (let ti = 0; ti < suiviTracks.length; ti++) {
-    if (pisteAssignee.has(ti)) continue;
     const t = suiviTracks[ti];
+    if (pisteAssignee.has(ti)) { conserves.push(t); continue; }
+    if (t.etat === 'observation') {
+      // une détection isolée (reflet, bruit, meuble) qui ne se confirme pas est abandonnée sans laisser de trace
+      continue;
+    }
     t.framesSansDetection = (t.framesSansDetection || 0) + 1;
     t.etat = t.framesSansDetection <= SUIVI_GRACE_FRAMES ? 'incertain' : 'perdu';
+    conserves.push(t);
   }
+  suiviTracks = conserves;
 
-  // 2.3 les suivis "perdus" sortent de la liste active et passent en mémoire courte
+  // 2.3 les suivis confirmés "perdus" sortent de la liste active et passent en mémoire courte
   const actifs = [];
   for (const t of suiviTracks) {
     if (t.etat === 'perdu') suiviPerdusRecents.push({ id: t.id, sig: t.sig, perduA: Date.now() });
@@ -596,7 +709,7 @@ function suiviAnalyseUneFois() {
   const maintenant = Date.now();
   suiviPerdusRecents = suiviPerdusRecents.filter(p => maintenant - p.perduA < SUIVI_MEMOIRE_MS);
 
-  // 2.4 détections non appariées : ré-identification depuis la mémoire, ou nouvelle identité
+  // 2.4 détections non appariées : ré-identification depuis la mémoire, ou nouvelle détection "en observation"
   for (let di = 0; di < detections.length; di++) {
     if (detAssignee.has(di)) continue;
     const d = detections[di];
@@ -606,20 +719,22 @@ function suiviAnalyseUneFois() {
       if (s > meilleurScore) { second = meilleurScore; meilleur = p; meilleurScore = s; }
       else if (s > second) { second = s; }
     }
-    let track;
     if (meilleur && meilleurScore >= SUIVI_SEUIL_REID && (meilleurScore - Math.max(0, second)) >= SUIVI_MARGE_REID) {
-      // ré-identification nette : même identité qu'avant, pas de nouveau compte
-      track = { id: meilleur.id, bbox: d.bbox, prevBbox: null, sig: d.sig, framesSansDetection: 0, etat: 'actif' };
+      // ré-identification nette : même identité qu'avant, pas de nouveau compte, pas besoin de reconfirmer
+      const track = { id: meilleur.id, bbox: d.bbox, prevBbox: null, sig: d.sig, framesSansDetection: 0, etat: 'actif' };
       suiviPerdusRecents = suiviPerdusRecents.filter(p => p !== meilleur);
+      suiviTracks.push(track);
     } else if (meilleur && meilleurScore >= SUIVI_SEUIL_REID) {
       // ressemble fortement à plusieurs souvenirs à la fois (ex. deux paquets identiques) : on ne devine pas
-      track = { id: suiviProchainId++, bbox: d.bbox, prevBbox: null, sig: d.sig, framesSansDetection: 0, etat: 'ambigu' };
+      const track = { id: suiviProchainId++, bbox: d.bbox, prevBbox: null, sig: d.sig, framesSansDetection: 0, etat: 'ambigu' };
       suiviIdsVusUneFois++;
+      suiviTracks.push(track);
     } else {
-      track = { id: suiviProchainId++, bbox: d.bbox, prevBbox: null, sig: d.sig, framesSansDetection: 0, etat: 'actif' };
-      suiviIdsVusUneFois++;
+      // détection jamais vue : mise "en observation", pas encore comptée comme identité —
+      // elle ne le sera que si on la revoit à une position cohérente à la prochaine analyse
+      const track = { id: null, bbox: d.bbox, prevBbox: null, sig: d.sig, framesSansDetection: 0, etat: 'observation' };
+      suiviTracks.push(track);
     }
-    suiviTracks.push(track);
   }
 
   suiviDessiner();
@@ -666,14 +781,17 @@ function suiviDessiner() {
     if (t.etat === 'actif') dessinerBoite(t.bbox, '#2f6fed', [], `#${t.id}`);
     else if (t.etat === 'incertain') dessinerBoite(t.bbox, '#fb8c00', [6, 4], `#${t.id} ?`);
     else if (t.etat === 'ambigu') dessinerBoite(t.bbox, '#8e44ad', [2, 3], `#${t.id} ambigu`);
+    else if (t.etat === 'observation') dessinerBoite(t.bbox, '#9aa0a6', [1, 4], '…');
   }
 }
 
 function suiviMettreAJourStatut() {
   const nb = (etat) => suiviTracks.filter(t => t.etat === etat).length;
+  const enObservation = nb('observation');
   suiviStatutEl.innerHTML =
-    `<b>${suiviTracks.length}</b> paquet(s) à l'écran — ${nb('actif')} net(s), ${nb('incertain')} incertain(s), ${nb('ambigu')} ambigu(s)` +
-    ` · <b>${suiviIdsVusUneFois}</b> identité(s) distincte(s) créée(s) depuis le début du suivi`;
+    `<b>${suiviTracks.length - enObservation}</b> paquet(s) confirmé(s) à l'écran — ${nb('actif')} net(s), ${nb('incertain')} incertain(s), ${nb('ambigu')} ambigu(s)` +
+    (enObservation ? ` · ${enObservation} en observation (pas encore confirmé)` : '') +
+    ` · <b>${suiviIdsVusUneFois}</b> identité(s) confirmée(s) créée(s) depuis le début du suivi`;
 }
 
 /* ---- 4. Démarrage / arrêt, branché sur la caméra en direct ---- */
@@ -716,9 +834,10 @@ function suiviAnalysePhotoUnique(img) {
   legendeSuiviEl.classList.add('visible');
   grilleEl.style.display = 'none';
   suiviAnalyseUneFois();
-  suiviStatutEl.innerHTML += ' · <i>photo unique : aucun suivi de mouvement possible, seulement une détection ponctuelle.</i>';
+  suiviStatutEl.innerHTML += ' · <i>photo unique : aucun suivi de mouvement possible, seulement une détection ponctuelle (rien ne peut donc être "confirmé" par une seconde vue).</i>';
 }
 preloadSignatures();
+
 
 </script>
 </body>
