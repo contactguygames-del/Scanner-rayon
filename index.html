@@ -386,6 +386,7 @@ document.getElementById('btnStop').onclick = () => {
 
 
 
+
 /* ==========================================================================
    SUIVI DE PAQUETS SANS GRILLE (nouvelle fonctionnalité) — v2
    --------------------------------------------------------------------------
@@ -400,30 +401,43 @@ document.getElementById('btnStop').onclick = () => {
    CORRECTION v2 (suite à un test réel sur boîtes) : la version précédente
    affichait 9 contours à l'écran mais avait déjà créé 102 identités, et
    encadrait le meuble, des bouteilles et du vide en "suivi net". Deux
-   défauts corrigés ici :
+   défauts corrigés :
    1) Le détecteur acceptait n'importe quelle zone plate comme candidat,
       y compris de grandes surfaces de fond (meuble, mur) qui débordent du
-      cadre sur plusieurs côtés : on rejette maintenant les candidats qui
-      touchent 2 côtés ou plus de l'image analysée.
+      cadre sur plusieurs côtés : on rejette les candidats qui touchent
+      2 côtés ou plus de l'image analysée.
    2) Le suivi exigeait un recouvrement de zone strictement positif entre
       la position prévue et la détection pour rattacher un paquet ; un
       mouvement de caméra normal suffisait à faire perdre ce recouvrement
       en une seule mesure (300 ms), donc à fermer puis rouvrir une identité
-      à chaque déplacement. La fenêtre de recherche est maintenant élargie
-      et amortie. Une nouvelle détection ne devient une identité comptée
-      qu'après avoir été revue une seconde fois à une position cohérente
-      ("en observation", gris pointillé) — un flash isolé (reflet, bruit)
-      ne crée donc plus d'identité.
-   3) Un paquet imprimé (étiquette, logo, fond de couleur différente) se
-      fragmente souvent en plusieurs zones plates adjacentes à la détection ;
-      chaque fragment pouvait devenir sa propre identité. Les fragments très
-      proches ou qui se touchent sont maintenant refusionnés en un seul
-      candidat avant le suivi.
+      à chaque déplacement. La fenêtre de recherche est élargie et amortie.
+      Une nouvelle détection ne devient une identité comptée qu'après avoir
+      été revue une seconde fois à une position cohérente ("en observation",
+      gris pointillé) — un flash isolé (reflet, bruit) ne crée plus d'identité.
+   CORRECTION v3 (suite à un second test réel, avec de vrais paquets) : la
+   version v2 ne créait plus d'identités fantômes, mais elle ne voyait plus
+   les paquets du tout — seul le meuble était détecté (« #2 suivi net » sur
+   du bois). Cause trouvée : la détection ne cherchait que des zones plates
+   (faible contraste), or un paquet imprimé réel (étiquette, texte, logo)
+   est une zone très contrastée d'un bout à l'autre — c'est le meuble, uni,
+   qui ressemblait le plus à une "zone plate". La détection cherchait donc
+   le contraire de ce qu'il fallait trouver. Deux méthodes de détection sont
+   maintenant combinées :
+   A) zones PLATES (comme avant) — pour un paquet à fond uni ou peu imprimé.
+   B) zones TEXTURÉES — un paquet imprimé est repéré comme une zone dense en
+      contraste local, regroupée par petites cellules ; deux cellules
+      voisines ne sont fusionnées que si leur couleur moyenne est proche,
+      pour éviter de fondre deux paquets adjacents de couleurs différentes
+      en un seul candidat. Le seuil "texturé / pas texturé" est recalculé à
+      chaque image (méthode d'Otsu) plutôt que fixé à l'avance, pour
+      s'adapter à l'éclairage réel plutôt qu'à un réglage figé en atelier.
+   Les candidats des deux méthodes passent par les mêmes filtres (taille,
+   forme, bords touchés) puis sont dédoublonnés si deux candidats désignent
+   manifestement le même paquet.
    Méthode utilisée (aucune bibliothèque, aucun modèle à télécharger) :
    1) DÉTECTION par image : image réduite → contraste local (gradient) →
-      les zones de faible contraste ("intérieur plat" d'un paquet) sont
-      regroupées par voisinage (flood fill) en candidats rectangulaires,
-      filtrés par taille, forme et bords touchés.
+      zones plates ET zones texturées regroupées par voisinage en candidats
+      rectangulaires, filtrés par taille, forme et bords touchés.
    2) SUIVI d'une image à l'autre : chaque candidat est rapproché des
       paquets déjà suivis par position (fenêtre élargie autour de la
       position prévue) ET par apparence (le même hachage dHash + couleur
@@ -440,8 +454,12 @@ document.getElementById('btnStop').onclick = () => {
       paquets qui se ressemblent trop, ex. deux emballages identiques),
       l'identité n'est jamais devinée : le paquet reçoit un contour
       "ambigu" distinct.
-   Ce sont des réglages ajustés une première fois après un test réel ; ils
-   restent à affiner après le prochain test sur un vrai rayon.
+   Limite connue, assumée pour ce palier : deux paquets de couleurs très
+   proches, posés bord à bord sans aucun espace visible entre eux, peuvent
+   encore être vus comme un seul candidat élargi plutôt que deux candidats
+   séparés — un écart visible entre les paquets (comme sur un vrai rayon)
+   sépare correctement les candidats. Ce sont des réglages ajustés après
+   deux tests réels ; ils restent à affiner après le prochain test.
    ========================================================================== */
 
 const SUIVI_LARGEUR_ANALYSE = 220;   // largeur (px) de l'image réduite utilisée pour la détection : compromis vitesse/précision
@@ -452,7 +470,11 @@ const SUIVI_AIRE_MAX        = 0.55;  // un blob plus grand que 55 % de l'image e
 const SUIVI_RATIO_MAX       = 4.2;   // un blob trop filiforme (largeur/hauteur ou inverse) est rejeté
 const SUIVI_BORDS_MAX       = 1;     // un blob qui touche plus de ce nombre de côtés de l'image est probablement du fond (meuble, mur) et non un paquet
 const SUIVI_FUSION_MARGE    = 0.02;  // proximité (fraction de la plus petite dimension analysée) en dessous de laquelle deux zones plates voisines sont fusionnées en un seul candidat (évite qu'un paquet imprimé se fragmente en plusieurs identités)
-const SUIVI_FUSION_AIRE_MAX = 0.25;  // une zone déjà plus grande que ça à elle seule n'est pas un simple fragment d'un petit objet : elle ne participe pas à la fusion
+const SUIVI_FUSION_AIRE_MAX = 0.15;  // une zone déjà plus grande que ça à elle seule n'est pas un simple fragment d'un petit objet : elle ne participe pas à la fusion
+const SUIVI_FUSION_DIM_MAX  = 0.5;   // une fusion qui s'étire sur plus de cette fraction de la largeur OU de la hauteur du cadre est refusée, même si son aire totale reste petite (évite un pont via un mince fragment qui relierait deux objets différents)
+const SUIVI_CELLULE_TEXTURE = 6;     // taille (px, image réduite) des cellules utilisées pour repérer les zones "texturées" (étiquettes imprimées) plutôt que "plates"
+const SUIVI_COULEUR_SEUIL   = 45;    // écart de couleur moyenne au-delà duquel deux cellules texturées voisines ne sont pas regroupées (évite de fusionner deux paquets adjacents de couleurs différentes en un seul candidat)
+const SUIVI_DEDOUBLONNAGE_IOU = 0.5; // au-delà de ce recouvrement, un candidat "texture" et un candidat "plat" sont considérés comme le même paquet physique (on ne garde que le plus grand)
 const SUIVI_GRACE_FRAMES    = 3;     // nombre d'analyses sans détection avant de passer "incertain" puis "perdu" (paquets déjà confirmés)
 const SUIVI_MEMOIRE_MS      = 15000; // durée pendant laquelle un paquet "perdu" reste en mémoire pour une ré-identification
 const SUIVI_SEUIL_REID      = 0.78;  // similarité minimale pour redonner une identité à un paquet revenu dans le cadre
@@ -483,7 +505,144 @@ function suiviReset() {
   suiviStatutEl.textContent = '';
 }
 
-/* ---- 1. Détection : zones plates candidates à être un paquet, en excluant les grandes surfaces de fond ---- */
+// filtre commun (taille, forme, bords touchés) appliqué aux candidats des deux méthodes de détection
+function suiviCandidatValide(bb, w, h) {
+  const bw = bb.maxX - bb.minX + 1, bh = bb.maxY - bb.minY + 1;
+  const aire = (bw * bh) / (w * h);
+  const ratio = Math.max(bw / bh, bh / bw);
+  if (aire < SUIVI_AIRE_MIN || aire > SUIVI_AIRE_MAX) return false;
+  if (ratio > SUIVI_RATIO_MAX) return false;
+  // un paquet posé sur un rayon, vu d'assez près pour être identifiable, ne touche normalement pas
+  // plus d'un côté du cadre à la fois ; une zone qui touche 2 côtés ou plus (meuble, mur, plan de
+  // travail) se prolonge presque toujours hors de l'image et n'est pas un objet isolé.
+  let cotesTouches = 0;
+  if (bb.minX <= 1) cotesTouches++;
+  if (bb.maxX >= w - 2) cotesTouches++;
+  if (bb.minY <= 1) cotesTouches++;
+  if (bb.maxY >= h - 2) cotesTouches++;
+  return cotesTouches <= SUIVI_BORDS_MAX;
+}
+
+/* ---- 1a. Détection méthode A : zones PLATES (paquet à fond uni ou peu imprimé) ---- */
+function suiviDetecterZonesPlates(gray, bordPlein, w, h) {
+  const vu = new Uint8Array(w * h);
+  const bruts = [];
+  const pileX = new Int32Array(w * h);
+  const pileY = new Int32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i0 = y * w + x;
+      if (vu[i0] || bordPlein[i0]) continue;
+      let sp = 0;
+      pileX[sp] = x; pileY[sp] = y; sp++;
+      vu[i0] = 1;
+      let minX = x, maxX = x, minY = y, maxY = y, n = 0;
+      while (sp > 0) {
+        sp--;
+        const cx = pileX[sp], cy = pileY[sp];
+        n++;
+        if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+        if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
+        if (cx + 1 < w) { const ni = cy * w + (cx + 1); if (!vu[ni] && !bordPlein[ni]) { vu[ni] = 1; pileX[sp] = cx + 1; pileY[sp] = cy; sp++; } }
+        if (cx - 1 >= 0) { const ni = cy * w + (cx - 1); if (!vu[ni] && !bordPlein[ni]) { vu[ni] = 1; pileX[sp] = cx - 1; pileY[sp] = cy; sp++; } }
+        if (cy + 1 < h) { const ni = (cy + 1) * w + cx; if (!vu[ni] && !bordPlein[ni]) { vu[ni] = 1; pileX[sp] = cx; pileY[sp] = cy + 1; sp++; } }
+        if (cy - 1 >= 0) { const ni = (cy - 1) * w + cx; if (!vu[ni] && !bordPlein[ni]) { vu[ni] = 1; pileX[sp] = cx; pileY[sp] = cy - 1; sp++; } }
+      }
+      if (n < 4) continue; // quelques pixels isolés : bruit pur, jamais un objet
+      bruts.push({ minX, maxX, minY, maxY });
+    }
+  }
+  return bruts;
+}
+
+/* ---- 1b. Détection méthode B : zones TEXTURÉES (paquet imprimé : étiquette, texte, logo) ----
+   Un paquet réel est souvent une zone à fort contraste local d'un bout à l'autre (texte, image,
+   logo) plutôt qu'une zone plate. On regroupe les petites cellules "texturées" par voisinage, en
+   n'autorisant la fusion entre deux cellules voisines que si leur couleur moyenne est proche —
+   cela sépare deux paquets adjacents de couleurs différentes plutôt que de tout regrouper en un
+   seul grand candidat. Le seuil "texturé" est recalculé à chaque image (méthode d'Otsu) pour
+   s'adapter à l'éclairage réel plutôt qu'à un réglage figé à l'avance. */
+function suiviDetecterZonesTexturees(grad, d, w, h) {
+  const CELL = SUIVI_CELLULE_TEXTURE;
+  const cw = Math.ceil(w / CELL), ch = Math.ceil(h / CELL);
+  const energie = new Float32Array(cw * ch);
+  const colR = new Float32Array(cw * ch), colG = new Float32Array(cw * ch), colB = new Float32Array(cw * ch);
+  for (let cy = 0; cy < ch; cy++) {
+    for (let cx = 0; cx < cw; cx++) {
+      let s = 0, n = 0, r = 0, g = 0, b = 0;
+      for (let y = cy * CELL; y < Math.min(h, (cy + 1) * CELL); y++) {
+        for (let x = cx * CELL; x < Math.min(w, (cx + 1) * CELL); x++) {
+          const i = y * w + x; s += grad[i]; n++;
+          const pi = i * 4; r += d[pi]; g += d[pi + 1]; b += d[pi + 2];
+        }
+      }
+      const idx = cy * cw + cx;
+      energie[idx] = n ? s / n : 0;
+      colR[idx] = n ? r / n : 0; colG[idx] = n ? g / n : 0; colB[idx] = n ? b / n : 0;
+    }
+  }
+
+  // seuil "texturé / plat" recalculé par image (méthode d'Otsu sur l'histogramme des énergies de cellule)
+  const vals = Array.from(energie).sort((a, b) => a - b);
+  const mn = vals[0], mx = vals[vals.length - 1];
+  let seuil = mn;
+  if (mx > mn) {
+    const bins = 256;
+    const hist = new Array(bins).fill(0);
+    for (const v of vals) hist[Math.floor((v - mn) / (mx - mn) * (bins - 1))]++;
+    const total = vals.length;
+    let sum = 0; for (let i = 0; i < bins; i++) sum += i * hist[i];
+    let sumB = 0, wB = 0, wF = 0, maxVar = 0, thresh = 0;
+    for (let t = 0; t < bins; t++) {
+      wB += hist[t]; if (wB === 0) continue;
+      wF = total - wB; if (wF === 0) break;
+      sumB += t * hist[t];
+      const mB = sumB / wB, mF = (sum - sumB) / wF;
+      const varEntre = wB * wF * (mB - mF) * (mB - mF);
+      if (varEntre > maxVar) { maxVar = varEntre; thresh = t; }
+    }
+    seuil = mn + (thresh / (bins - 1)) * (mx - mn);
+  }
+  const candidat = new Uint8Array(cw * ch);
+  for (let i = 0; i < cw * ch; i++) candidat[i] = energie[i] > seuil ? 1 : 0;
+
+  // composantes connexes sur la grille de cellules, avec porte de similarité de couleur
+  const vu = new Uint8Array(cw * ch);
+  const comps = [];
+  const pileX = new Int32Array(cw * ch), pileY = new Int32Array(cw * ch);
+  const distCoul = (i, j) => {
+    const dr = colR[i] - colR[j], dg = colG[i] - colG[j], db = colB[i] - colB[j];
+    return Math.sqrt(dr * dr + dg * dg + db * db);
+  };
+  for (let cy = 0; cy < ch; cy++) {
+    for (let cx = 0; cx < cw; cx++) {
+      const i0 = cy * cw + cx;
+      if (vu[i0] || !candidat[i0]) continue;
+      let sp = 0; pileX[sp] = cx; pileY[sp] = cy; sp++; vu[i0] = 1;
+      let minX = cx, maxX = cx, minY = cy, maxY = cy, n = 0;
+      while (sp > 0) {
+        sp--;
+        const x = pileX[sp], y = pileY[sp], i1 = y * cw + x;
+        n++;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+        const voisins = [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]];
+        for (const [nx, ny] of voisins) {
+          if (nx < 0 || nx >= cw || ny < 0 || ny >= ch) continue;
+          const ni = ny * cw + nx;
+          if (vu[ni] || !candidat[ni]) continue;
+          if (distCoul(i1, ni) > SUIVI_COULEUR_SEUIL) continue; // couleur trop différente : probablement un autre paquet
+          vu[ni] = 1; pileX[sp] = nx; pileY[sp] = ny; sp++;
+        }
+      }
+      if (n < 2) continue; // une seule cellule isolée : bruit
+      comps.push({ minX: minX * CELL, maxX: Math.min(w - 1, (maxX + 1) * CELL - 1), minY: minY * CELL, maxY: Math.min(h - 1, (maxY + 1) * CELL - 1) });
+    }
+  }
+  return comps;
+}
+
+/* ---- 1. Détection : combine les deux méthodes (zones plates + zones texturées) ---- */
 function suiviDetecterBlobs(source, srcW, srcH) {
   if (!srcW || !srcH) return [];
   const w = SUIVI_LARGEUR_ANALYSE;
@@ -498,81 +657,74 @@ function suiviDetecterBlobs(source, srcW, srcH) {
   for (let i = 0, p = 0; i < d.length; i += 4, p++) {
     gray[p] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
   }
-
-  const bord = new Uint8Array(w * h);
+  const grad = new Float32Array(w * h);
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
       const i = y * w + x;
       const gx = gray[i + 1] - gray[i - 1];
       const gy = gray[i + w] - gray[i - w];
-      bord[i] = (Math.abs(gx) + Math.abs(gy)) > SUIVI_SEUIL_GRADIENT ? 1 : 0;
+      grad[i] = Math.abs(gx) + Math.abs(gy);
     }
   }
+  const bordPlein = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) bordPlein[i] = grad[i] > SUIVI_SEUIL_GRADIENT ? 1 : 0;
   // le pourtour de l'image est toujours traité comme un bord, pour éviter qu'un blob "s'échappe" hors cadre
-  for (let x = 0; x < w; x++) { bord[x] = 1; bord[(h - 1) * w + x] = 1; }
-  for (let y = 0; y < h; y++) { bord[y * w] = 1; bord[y * w + w - 1] = 1; }
+  for (let x = 0; x < w; x++) { bordPlein[x] = 1; bordPlein[(h - 1) * w + x] = 1; }
+  for (let y = 0; y < h; y++) { bordPlein[y * w] = 1; bordPlein[y * w + w - 1] = 1; }
 
-  const vu = new Uint8Array(w * h);
-  const bruts = [];
-  const pileX = new Int32Array(w * h);
-  const pileY = new Int32Array(w * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i0 = y * w + x;
-      if (vu[i0] || bord[i0]) continue;
-      let sp = 0;
-      pileX[sp] = x; pileY[sp] = y; sp++;
-      vu[i0] = 1;
-      let minX = x, maxX = x, minY = y, maxY = y, n = 0;
-      while (sp > 0) {
-        sp--;
-        const cx = pileX[sp], cy = pileY[sp];
-        n++;
-        if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
-        if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
-        if (cx + 1 < w) { const ni = cy * w + (cx + 1); if (!vu[ni] && !bord[ni]) { vu[ni] = 1; pileX[sp] = cx + 1; pileY[sp] = cy; sp++; } }
-        if (cx - 1 >= 0) { const ni = cy * w + (cx - 1); if (!vu[ni] && !bord[ni]) { vu[ni] = 1; pileX[sp] = cx - 1; pileY[sp] = cy; sp++; } }
-        if (cy + 1 < h) { const ni = (cy + 1) * w + cx; if (!vu[ni] && !bord[ni]) { vu[ni] = 1; pileX[sp] = cx; pileY[sp] = cy + 1; sp++; } }
-        if (cy - 1 >= 0) { const ni = (cy - 1) * w + cx; if (!vu[ni] && !bord[ni]) { vu[ni] = 1; pileX[sp] = cx; pileY[sp] = cy - 1; sp++; } }
-      }
-      if (n < 4) continue; // quelques pixels isolés : bruit pur, jamais un objet
-      bruts.push({ minX, maxX, minY, maxY });
+  // fusionne les fragments proches d'une liste de boîtes brutes, en laissant de côté celles déjà
+  // assez grandes pour ne pas être un simple fragment (sinon une grande zone "absorberait" tous les
+  // petits candidats voisins de sa boîte englobante et transformerait tout le cadre en un candidat).
+  const fusionnerAvecGardeFou = (bruts) => {
+    const petits = [], grands = [];
+    for (const b of bruts) {
+      const bw = b.maxX - b.minX + 1, bh = b.maxY - b.minY + 1;
+      const aire = (bw * bh) / (w * h);
+      if (aire > SUIVI_FUSION_AIRE_MAX) grands.push(b); else petits.push(b);
     }
+    return suiviFusionnerBoites(petits, w, h).concat(grands);
+  };
+
+  // chaque méthode fusionne d'abord ses propres fragments (un paquet imprimé se fragmente souvent en
+  // plusieurs zones plates ou en plusieurs cellules texturées adjacentes)
+  const brutsA = fusionnerAvecGardeFou(suiviDetecterZonesPlates(gray, bordPlein, w, h));
+  const brutsB = suiviDetecterZonesTexturees(grad, d, w, h); // déjà regroupées par cellules à l'étape précédente
+
+  // puis on fusionne une seconde fois entre les deux méthodes : la zone plate du fond d'un paquet et la
+  // zone texturée de son étiquette, juste au-dessus ou en dessous, désignent le même objet physique.
+  // Les garde-fous d'aire ET de dimension dans suiviFusionnerBoites empêchent cette seconde passe de
+  // "faire le pont" jusqu'à un objet sans rapport (ex. le meuble en dessous, via un mince reflet).
+  const candidats = fusionnerAvecGardeFou(brutsA.concat(brutsB)).filter(bb => suiviCandidatValide(bb, w, h));
+
+  // dédoublonnage final : après fusion, deux candidats qui désignent quand même le même paquet
+  // (fort recouvrement, ou l'un presque entièrement contenu dans l'autre) ne comptent qu'une fois —
+  // on garde le plus grand des deux.
+  const aire = (bb) => (bb.maxX - bb.minX + 1) * (bb.maxY - bb.minY + 1);
+  const inter = (a, b) => {
+    const ix1 = Math.max(a.minX, b.minX), iy1 = Math.max(a.minY, b.minY);
+    const ix2 = Math.min(a.maxX, b.maxX), iy2 = Math.min(a.maxY, b.maxY);
+    const iw = Math.max(0, ix2 - ix1 + 1), ih = Math.max(0, iy2 - iy1 + 1);
+    return iw * ih;
+  };
+  const memeObjet = (a, b) => {
+    const i = inter(a, b);
+    if (i <= 0) return false;
+    const iou = i / (aire(a) + aire(b) - i);
+    if (iou > SUIVI_DEDOUBLONNAGE_IOU) return true;
+    const contenu = i / Math.min(aire(a), aire(b));
+    return contenu > 0.7; // l'un est presque entièrement à l'intérieur de l'autre : même paquet
+  };
+  candidats.sort((a, b) => aire(b) - aire(a));
+  const gardes = [];
+  for (const cnd of candidats) {
+    if (gardes.some(g => memeObjet(g, cnd))) continue;
+    gardes.push(cnd);
   }
 
-  // un paquet imprimé (logo, étiquette, fond de couleur différente) se fragmente souvent en plusieurs
-  // zones plates adjacentes à ce stade ; on les refusionne si elles se touchent ou sont très proches,
-  // pour ne pas suivre un seul paquet physique comme si c'étaient plusieurs objets différents.
-  // Une zone déjà grande à elle seule (meuble, mur) n'est pas un simple fragment : elle n'entre pas
-  // dans la fusion, sinon elle "absorberait" tous les petits candidats voisins de son immense boîte
-  // englobante et transformerait tout le cadre en un seul candidat.
-  const candidatsFusion = [], horsFusion = [];
-  for (const b of bruts) {
-    const bw = b.maxX - b.minX + 1, bh = b.maxY - b.minY + 1;
-    const aire = (bw * bh) / (w * h);
-    if (aire > SUIVI_FUSION_AIRE_MAX) horsFusion.push(b); else candidatsFusion.push(b);
-  }
-  const fusionnes = suiviFusionnerBoites(candidatsFusion, w, h).concat(horsFusion);
-
-  const blobs = [];
-  for (const bb of fusionnes) {
-    const bw = bb.maxX - bb.minX + 1, bh = bb.maxY - bb.minY + 1;
-    const aire = (bw * bh) / (w * h);
-    const ratio = Math.max(bw / bh, bh / bw);
-    if (aire < SUIVI_AIRE_MIN || aire > SUIVI_AIRE_MAX) continue;
-    if (ratio > SUIVI_RATIO_MAX) continue;
-    // un paquet posé sur un rayon, vu d'assez près pour être identifiable, ne touche normalement pas
-    // plus d'un côté du cadre à la fois ; une zone plate qui touche 2 côtés ou plus (meuble, mur,
-    // plan de travail) se prolonge presque toujours hors de l'image et n'est pas un objet isolé.
-    let cotesTouches = 0;
-    if (bb.minX <= 1) cotesTouches++;
-    if (bb.maxX >= w - 2) cotesTouches++;
-    if (bb.minY <= 1) cotesTouches++;
-    if (bb.maxY >= h - 2) cotesTouches++;
-    if (cotesTouches > SUIVI_BORDS_MAX) continue;
-    blobs.push({ x: bb.minX / w, y: bb.minY / h, w: bw / w, h: bh / h });
-  }
-  return blobs;
+  return gardes.map(bb => ({
+    x: bb.minX / w, y: bb.minY / h,
+    w: (bb.maxX - bb.minX + 1) / w, h: (bb.maxY - bb.minY + 1) / h,
+  }));
 }
 
 function suiviFusionnerBoites(bruts, w, h) {
@@ -586,15 +738,25 @@ function suiviFusionnerBoites(bruts, w, h) {
         const a = boites[i], b = boites[j];
         const proche = (a.minX - marge <= b.maxX) && (b.minX - marge <= a.maxX) &&
                        (a.minY - marge <= b.maxY) && (b.minY - marge <= a.maxY);
-        if (proche) {
-          boites[i] = {
-            minX: Math.min(a.minX, b.minX), maxX: Math.max(a.maxX, b.maxX),
-            minY: Math.min(a.minY, b.minY), maxY: Math.max(a.maxY, b.maxY),
-          };
-          boites.splice(j, 1);
-          refait = true;
-          break;
-        }
+        if (!proche) continue;
+        const fusionMinX = Math.min(a.minX, b.minX), fusionMaxX = Math.max(a.maxX, b.maxX);
+        const fusionMinY = Math.min(a.minY, b.minY), fusionMaxY = Math.max(a.maxY, b.maxY);
+        // sur une image réelle, de nombreux petits fragments épars (fond, texte, reflets) peuvent se
+        // toucher deux à deux de proche en proche et, par effet de chaîne, finir par couvrir tout le
+        // cadre — même si chaque fragment pris seul est petit. On refuse une fusion dont le résultat
+        // dépasserait déjà la taille d'un paquet plausible, ce qui arrête la chaîne avant qu'elle ne
+        // s'étende à toute l'image, sans empêcher la fusion de deux fragments réellement voisins.
+        const aireFusion = ((fusionMaxX - fusionMinX + 1) * (fusionMaxY - fusionMinY + 1)) / (w * h);
+        if (aireFusion > SUIVI_FUSION_AIRE_MAX) continue;
+        // une fusion peut rester "petite en aire" tout en s'étirant sur une grande partie de la largeur
+        // ou de la hauteur du cadre (ex. un mince reflet qui relie un paquet au bord du meuble en
+        // dessous) : on la refuse aussi si elle s'étire trop sur un des deux axes.
+        if ((fusionMaxX - fusionMinX + 1) / w > SUIVI_FUSION_DIM_MAX) continue;
+        if ((fusionMaxY - fusionMinY + 1) / h > SUIVI_FUSION_DIM_MAX) continue;
+        boites[i] = { minX: fusionMinX, maxX: fusionMaxX, minY: fusionMinY, maxY: fusionMaxY };
+        boites.splice(j, 1);
+        refait = true;
+        break;
       }
     }
   }
@@ -836,7 +998,7 @@ function suiviAnalysePhotoUnique(img) {
   suiviAnalyseUneFois();
   suiviStatutEl.innerHTML += ' · <i>photo unique : aucun suivi de mouvement possible, seulement une détection ponctuelle (rien ne peut donc être "confirmé" par une seconde vue).</i>';
 }
-preloadSignatures();
+
 
 
 </script>
