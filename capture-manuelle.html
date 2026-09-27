@@ -28,11 +28,12 @@
     font-size: 11px; color: #7dd3fc; font-weight: 700; margin-bottom: 6px; flex: 0 0 auto;
   }
   #pileEnCours {
-    flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;
+    flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: row; flex-wrap: wrap;
+    align-content: flex-start; gap: 6px;
   }
   #pileEnCours .videSpanVide { color: #666; font-size: 12px; padding: 4px 0; }
   .miniVignette {
-    flex: 0 0 auto; width: 100%; height: 54px; border-radius: 8px; overflow: hidden;
+    flex: 0 0 auto; width: 30%; aspect-ratio: 3/4; border-radius: 8px; overflow: hidden;
     position: relative; border: 2px solid #333; background: #111; display: flex;
   }
   .miniVignette img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -81,7 +82,7 @@
     background: #10151d; border-radius: 6px; padding: 2px 8px;
   }
   .vignette {
-    flex: 0 0 auto; width: 70px; height: 70px; border-radius: 10px; overflow: hidden;
+    flex: 0 0 auto; width: 62px; aspect-ratio: 3/4; border-radius: 10px; overflow: hidden;
     position: relative; border: 2px solid #333; background: #111;
   }
   .vignette img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -99,7 +100,7 @@
     display: flex; gap: 10px; background: #161616; border-radius: 12px; padding: 10px;
     margin-bottom: 10px; align-items: flex-start;
   }
-  .carteAnalyse img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; flex: 0 0 auto; }
+  .carteAnalyse img { width: 54px; aspect-ratio: 3/4; object-fit: cover; border-radius: 8px; flex: 0 0 auto; }
   .carteAnalyse .infos { font-size: 12.5px; line-height: 1.5; }
   .carteAnalyse .infos b { color: #ddd; }
   .carteAnalyse .infos .trouve { color: #4ade80; }
