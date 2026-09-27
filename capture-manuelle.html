@@ -71,6 +71,8 @@
   #btnCapturer { background: #1e8e3e; font-size: 18px; padding: 20px; flex: 2; }
   #btnVide { background: #57534e; }
   #btnGalerieSuivante { background: #1d4ed8; }
+  #btnGaleriePrecedente { flex: 1; background: #3f3f46; font-size: 14px; }
+  #btnGaleriePrecedente:disabled { background: #292929; color: #666; }
   #zoneGalerie { padding: 12px 14px 4px; }
   #titreGalerie { font-size: 13px; color: #999; font-weight: 600; margin: 0 0 10px; }
   #listeGaleries { }
@@ -162,6 +164,7 @@
   <button id="btnVide" class="secondaire">Vide ici</button>
 </div>
 <div id="controls" style="padding-top:0;">
+  <button id="btnGaleriePrecedente" class="secondaire">◀ Galerie précédente</button>
   <button id="btnGalerieSuivante">Galerie suivante +</button>
 </div>
 
@@ -234,6 +237,7 @@ const btnArreter = document.getElementById('btnArreter');
 const btnCapturer = document.getElementById('btnCapturer');
 const btnVide = document.getElementById('btnVide');
 const btnGalerieSuivante = document.getElementById('btnGalerieSuivante');
+const btnGaleriePrecedente = document.getElementById('btnGaleriePrecedente');
 const flashVert = document.getElementById('flashVert');
 const compteurOverlay = document.getElementById('compteurOverlay');
 const positionOverlay = document.getElementById('positionOverlay');
@@ -358,6 +362,7 @@ btnDemarrer.onclick = async () => {
     btnCapturer.style.display = 'block';
     btnVide.style.display = 'block';
     btnGalerieSuivante.style.display = 'block';
+    btnGaleriePrecedente.style.display = 'block';
     majPositionOverlay();
   } catch (e) {
     alert("Caméra inaccessible : " + e.message);
@@ -388,13 +393,22 @@ btnVide.onclick = () => {
   sauverEtatDB();
 };
 
-btnGalerieSuivante.onclick = () => {
-  galerieActuelle++;
-  positionActuelle = 0;
+// ---- deplacement vers une galerie/ligne donnee (suivante OU precedente) : la position
+// repart TOUJOURS du nombre de captures deja presentes dans ce groupe (pour ce mode), jamais
+// remise a zero par defaut. Comme ca, revenir en arriere pour ajouter un produit oublie ne
+// decale rien, et re-avancer ensuite a travers des galeries deja visitees ne les efface pas ----
+function irVersGalerie(g) {
+  if (g < 1) return; // jamais sous la galerie/ligne 1
+  galerieActuelle = g;
+  positionActuelle = captures.filter(c => (c.modeOrigine || 'sachet') === modeCapture && c.galerie === g).length;
   majPositionOverlay();
   rendreGalerieEnCours();
+  rendreGalerie(); // remet a jour le surlignage "en cours" dans le plan
   sauverEtatDB();
-};
+}
+
+btnGalerieSuivante.onclick = () => { irVersGalerie(galerieActuelle + 1); };
+btnGaleriePrecedente.onclick = () => { irVersGalerie(galerieActuelle - 1); };
 
 // ---- navigation horizontale du plan (mode sachet) : les galeries restent cote a cote comme
 // dans le rayon reel, mais des fleches permettent d'avancer/reculer sans avoir a faire glisser
@@ -421,6 +435,7 @@ btnAllerEnCours.onclick = () => {
 
 function majPositionOverlay() {
   positionOverlay.textContent = `${etiquetteGroupe()} ${galerieActuelle} · position ${positionActuelle + 1}`;
+  btnGaleriePrecedente.disabled = galerieActuelle <= 1; // jamais en dessous de la 1ere galerie/ligne
 }
 
 // ---- mode sachet (galeries en colonnes) / boite (lignes empilees) : chaque capture porte
@@ -436,6 +451,7 @@ function appliquerModeUI(m) {
   btnModeSachet.classList.toggle('actif', m === 'sachet');
   btnModeBoite.classList.toggle('actif', m === 'boite');
   btnGalerieSuivante.textContent = m === 'boite' ? 'Ligne suivante +' : 'Galerie suivante +';
+  btnGaleriePrecedente.textContent = m === 'boite' ? '◀ Ligne précédente' : '◀ Galerie précédente';
   majPositionOverlay();
   rendreGalerieEnCours();
   rendreGalerie();
