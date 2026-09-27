@@ -406,9 +406,14 @@ btnSupprimer.onclick = () => {
   if (idxCourant === null) return;
   captures.splice(idxCourant, 1);
   renumeroter();
+  // resynchronise le compteur de la galerie EN COURS sur le nombre reel de captures
+  // restantes : sans ca, une suppression au milieu d'une galerie laissait le prochain
+  // numero de position "sauter" un cran pour toujours (bug reel trouve sur un releve terrain).
+  positionActuelle = captures.filter(c => c.galerie === galerieActuelle).length;
   window.__captures = captures;
   compteurOverlay.textContent = String(captures.length);
   lightbox.style.display = 'none';
+  majPositionOverlay();
   rendreGalerie();
   rendreGalerieEnCours();
 };
