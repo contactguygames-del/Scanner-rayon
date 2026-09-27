@@ -58,6 +58,8 @@
     font-size: 10px; font-weight: 700; background: rgba(0,0,0,0.55); color: #7dd3fc;
   }
   #controls { display: flex; gap: 10px; padding: 14px 16px; background: #000; }
+  .modeBtn { background: #222; font-size: 14px; padding: 12px; }
+  .modeBtn.actif { background: #1d4ed8; }
   button {
     flex: 1; padding: 16px; border: none; border-radius: 12px; font-size: 16px; font-weight: 700;
     background: #2563eb; color: #fff;
@@ -77,9 +79,12 @@
     overflow-x: auto; padding-bottom: 8px;
   }
   .colonneGalerie { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  #planRayonLignes { display: flex; flex-direction: column; gap: 14px; }
+  .rangeeLigne { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  .rangeeBoites { display: flex; flex-direction: row; gap: 8px; overflow-x: auto; padding-bottom: 6px; }
   .etiquetteGalerie {
     font-size: 11px; color: #7dd3fc; font-weight: 700; margin-bottom: 2px;
-    background: #10151d; border-radius: 6px; padding: 2px 8px;
+    background: #10151d; border-radius: 6px; padding: 2px 8px; display: inline-block;
   }
   .vignette {
     flex: 0 0 auto; width: 62px; aspect-ratio: 3/4; border-radius: 10px; overflow: hidden;
@@ -116,6 +121,11 @@
 </style>
 </head>
 <body>
+
+<div id="controls" style="padding-bottom:0;">
+  <button id="btnModeSachet" class="modeBtn actif">📦 Sachets</button>
+  <button id="btnModeBoite" class="modeBtn">📦 Boîtes</button>
+</div>
 
 <div id="zoneCapture">
   <div id="camWrap">
@@ -157,7 +167,7 @@
 <div id="controls" style="padding-top:0;">
   <button id="btnExporter" class="export" style="display:none;">⬇️ Télécharger tout (ZIP)</button>
 </div>
-<div id="noteExport" style="display:none;">Contient toutes les photos, nommées par galerie/position, plus un fichier releve.json qui décrit toute la structure (y compris les emplacements vides) — dépose-le ensuite dans ton Drive.</div>
+<div id="noteExport" style="display:none;">Contient toutes les photos, nommées par galerie/position ou ligne/position selon le mode choisi, plus un fichier releve.json qui décrit toute la structure (y compris les emplacements vides) — dépose-le ensuite dans ton Drive.</div>
 
 <div id="controls" style="padding-top:0; padding-bottom:22px;">
   <button id="btnNouvelleSession" class="secondaire" style="flex:1;">🗑️ Nouvelle session (efface tout)</button>
@@ -192,7 +202,10 @@ let audioCtx = null;
 let galerieActuelle = 1;
 let positionActuelle = 0; // position du PROCHAIN item dans la galerie actuelle (avant capture)
 let captures = []; // { seq, galerie, position, type: 'photo'|'vide', blob?, url? }
+let modeCapture = 'sachet'; // 'sachet' (galeries en colonnes) ou 'boite' (lignes empilees)
 
+const btnModeSachet = document.getElementById('btnModeSachet');
+const btnModeBoite = document.getElementById('btnModeBoite');
 const video = document.getElementById('video');
 const canvasCapture = document.getElementById('canvasCapture');
 const btnDemarrer = document.getElementById('btnDemarrer');
@@ -266,7 +279,7 @@ async function supprimerCaptureDB(id) {
 async function sauverEtatDB() {
   try {
     const db = await ouvrirDB();
-    db.transaction('etat', 'readwrite').objectStore('etat').put({ cle: 'etat', galerieActuelle, positionActuelle });
+    db.transaction('etat', 'readwrite').objectStore('etat').put({ cle: 'etat', galerieActuelle, positionActuelle, modeCapture });
   } catch (e) { console.log('[SAVE] echec sauvegarde etat (pas bloquant) :', e.message || e); }
 }
 
@@ -355,13 +368,32 @@ btnGalerieSuivante.onclick = () => {
 };
 
 function majPositionOverlay() {
-  positionOverlay.textContent = `Galerie ${galerieActuelle} · position ${positionActuelle + 1}`;
+  positionOverlay.textContent = `${etiquetteGroupe()} ${galerieActuelle} · position ${positionActuelle + 1}`;
 }
+
+// ---- mode sachet (galeries en colonnes) / boite (lignes empilees) : change juste le
+// vocabulaire et l'orientation du plan, la structure de donnees reste identique ----
+function etiquetteGroupe() {
+  return modeCapture === 'boite' ? 'Ligne' : 'Galerie';
+}
+
+function definirMode(m) {
+  modeCapture = m;
+  btnModeSachet.classList.toggle('actif', m === 'sachet');
+  btnModeBoite.classList.toggle('actif', m === 'boite');
+  btnGalerieSuivante.textContent = m === 'boite' ? 'Ligne suivante +' : 'Galerie suivante +';
+  majPositionOverlay();
+  rendreGalerieEnCours();
+  rendreGalerie();
+  sauverEtatDB();
+}
+btnModeSachet.onclick = () => definirMode('sachet');
+btnModeBoite.onclick = () => definirMode('boite');
 
 // ---- panneau "galerie en cours" : a cote du cadre de prise de vue, visible SANS scroller,
 // montre en direct les captures (et vides) de la galerie en train d'etre prise, top -> bas ----
 function rendreGalerieEnCours() {
-  etiquetteEnCours.textContent = `Galerie ${galerieActuelle} en cours`;
+  etiquetteEnCours.textContent = `${etiquetteGroupe()} ${galerieActuelle} en cours`;
   const items = captures.filter(c => c.galerie === galerieActuelle).sort((a, b) => a.position - b.position);
   if (items.length === 0) {
     pileEnCours.innerHTML = '<div class="videSpanVide">Rien capturé pour l\'instant</div>';
@@ -373,7 +405,7 @@ function rendreGalerieEnCours() {
       return `<div class="miniVignette vide" data-idx="${idxGlobal}">vide #${c.position}</div>`;
     }
     return `<div class="miniVignette" data-idx="${idxGlobal}">
-      <img src="${c.url}" alt="capture galerie ${c.galerie} position ${c.position}">
+      <img src="${c.url}" alt="capture ${etiquetteGroupe()} ${c.galerie} position ${c.position}">
       <div class="num">${String(c.position).padStart(3, '0')}</div>
     </div>`;
   }).join('');
@@ -455,24 +487,37 @@ function rendreGalerie() {
   const nbVides = captures.filter(c => c.type === 'vide').length;
   titreGalerie.textContent = `${nbPhotos} produit${nbPhotos > 1 ? 's' : ''} capturé${nbPhotos > 1 ? 's' : ''}${nbVides ? ' · ' + nbVides + ' vide' + (nbVides > 1 ? 's' : '') : ''}`;
 
-  // Colonnes = galeries (gauche -> droite), items empiles de haut en bas par position :
-  // ca reproduit visuellement la forme reelle du rayon, y compris les emplacements vides.
-  const galeries = [...new Set(captures.map(c => c.galerie))].sort((a, b) => a - b);
-  const colonnes = galeries.map((g) => {
-    const items = captures.filter(c => c.galerie === g).sort((a, b) => a.position - b.position);
-    const cases = items.map((c) => {
-      const idxGlobal = captures.indexOf(c);
-      if (c.type === 'vide') {
-        return `<div class="vignette vide" data-idx="${idxGlobal}">vide<br>#${c.position}</div>`;
-      }
-      return `<div class="vignette" data-idx="${idxGlobal}">
-        <img src="${c.url}" alt="capture galerie ${c.galerie} position ${c.position}">
-        <div class="num">${String(c.position).padStart(3, '0')}</div>
-      </div>`;
+  // Sachets : colonnes = galeries (gauche -> droite), items empiles de haut en bas par position.
+  // Boites : lignes = groupes empiles de haut en bas, boites de gauche a droite dans chaque ligne.
+  // Dans les deux cas ca reproduit visuellement la forme reelle du rayon, vides compris.
+  const etq = etiquetteGroupe();
+  const groupes = [...new Set(captures.map(c => c.galerie))].sort((a, b) => a - b);
+  const caseVignette = (c) => {
+    const idxGlobal = captures.indexOf(c);
+    if (c.type === 'vide') {
+      return `<div class="vignette vide" data-idx="${idxGlobal}">vide<br>#${c.position}</div>`;
+    }
+    return `<div class="vignette" data-idx="${idxGlobal}">
+      <img src="${c.url}" alt="capture ${etq} ${c.galerie} position ${c.position}">
+      <div class="num">${String(c.position).padStart(3, '0')}</div>
+    </div>`;
+  };
+
+  if (modeCapture === 'boite') {
+    const lignes = groupes.map((g) => {
+      const items = captures.filter(c => c.galerie === g).sort((a, b) => a.position - b.position);
+      const cases = items.map(caseVignette).join('');
+      return `<div class="rangeeLigne"><div class="etiquetteGalerie">${etq} ${g}</div><div class="rangeeBoites">${cases}</div></div>`;
     }).join('');
-    return `<div class="colonneGalerie"><div class="etiquetteGalerie">Galerie ${g}</div>${cases}</div>`;
-  }).join('');
-  listeGaleries.innerHTML = `<div id="planRayon">${colonnes}</div>`;
+    listeGaleries.innerHTML = `<div id="planRayonLignes">${lignes}</div>`;
+  } else {
+    const colonnes = groupes.map((g) => {
+      const items = captures.filter(c => c.galerie === g).sort((a, b) => a.position - b.position);
+      const cases = items.map(caseVignette).join('');
+      return `<div class="colonneGalerie"><div class="etiquetteGalerie">${etq} ${g}</div>${cases}</div>`;
+    }).join('');
+    listeGaleries.innerHTML = `<div id="planRayon">${colonnes}</div>`;
+  }
 
   [...listeGaleries.querySelectorAll('.vignette')].forEach(el => {
     el.onclick = () => ouvrirLightbox(parseInt(el.dataset.idx, 10));
@@ -489,7 +534,7 @@ function ouvrirLightbox(idx) {
   if (c.type === 'vide') return; // rien a afficher en grand pour un emplacement vide
   idxCourant = idx;
   lightboxImg.src = c.url;
-  lightboxLabel.textContent = `Galerie ${c.galerie} · position ${c.position}`;
+  lightboxLabel.textContent = `${etiquetteGroupe()} ${c.galerie} · position ${c.position}`;
   lightbox.style.display = 'flex';
 }
 btnFermerLightbox.onclick = () => { lightbox.style.display = 'none'; };
@@ -545,9 +590,9 @@ btnAnalyser.onclick = async () => {
     const carte = document.createElement('div');
     carte.className = 'carteAnalyse';
     carte.innerHTML = `
-      <img src="${c.url}" alt="capture galerie ${c.galerie} position ${c.position}">
+      <img src="${c.url}" alt="capture ${etiquetteGroupe()} ${c.galerie} position ${c.position}">
       <div class="infos">
-        <div><b>Galerie ${c.galerie} · position ${c.position}</b></div>
+        <div><b>${etiquetteGroupe()} ${c.galerie} · position ${c.position}</b></div>
         <div class="gencod">Gencod : recherche...</div>
         <div class="ocr">Texte : lecture en cours...</div>
       </div>`;
@@ -591,17 +636,18 @@ btnExporter.onclick = async () => {
       jszipCharge = true;
     }
     const zip = new JSZip();
-    const releve = { genere_le: new Date().toISOString(), galeries: {} };
+    const prefixe = modeCapture === 'boite' ? 'ligne' : 'galerie';
+    const releve = { genere_le: new Date().toISOString(), mode: modeCapture, groupes: {} };
 
     for (const c of captures) {
       const cle = String(c.galerie);
-      if (!releve.galeries[cle]) releve.galeries[cle] = [];
+      if (!releve.groupes[cle]) releve.groupes[cle] = [];
       if (c.type === 'photo') {
-        const nomFichier = `galerie${String(c.galerie).padStart(2, '0')}_position${String(c.position).padStart(2, '0')}.jpg`;
+        const nomFichier = `${prefixe}${String(c.galerie).padStart(2, '0')}_position${String(c.position).padStart(2, '0')}.jpg`;
         zip.file(nomFichier, c.blob);
-        releve.galeries[cle].push({ position: c.position, type: 'photo', fichier: nomFichier });
+        releve.groupes[cle].push({ position: c.position, type: 'photo', fichier: nomFichier });
       } else {
-        releve.galeries[cle].push({ position: c.position, type: 'vide' });
+        releve.groupes[cle].push({ position: c.position, type: 'vide' });
       }
     }
     zip.file('releve.json', JSON.stringify(releve, null, 2));
@@ -610,7 +656,7 @@ btnExporter.onclick = async () => {
     const url = URL.createObjectURL(contenuZip);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `releve-rayon-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.zip`;
+    a.download = `releve-rayon-${modeCapture}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.zip`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -657,9 +703,7 @@ btnNouvelleSession.onclick = async () => {
       positionActuelle = captures.filter(c => c.galerie === galerieActuelle).length;
     }
     compteurOverlay.textContent = String(captures.length);
-    majPositionOverlay();
-    rendreGalerie();
-    rendreGalerieEnCours();
+    definirMode((etat && etat.modeCapture) || 'sachet'); // reconstruit aussi overlay + plan + panneau en cours
   } else {
     await effacerSessionDB();
   }
