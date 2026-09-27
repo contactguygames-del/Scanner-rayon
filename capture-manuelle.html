@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Capture manuelle — test de lisibilité</title>
+<title>Capture manuelle — relevé par galerie</title>
 <style>
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   body {
@@ -20,23 +20,36 @@
     position: absolute; top: 12px; right: 12px; padding: 5px 12px; border-radius: 20px;
     font-size: 13px; font-weight: 800; background: rgba(0,0,0,0.55); color: #fff;
   }
+  #positionOverlay {
+    position: absolute; top: 12px; left: 12px; padding: 5px 12px; border-radius: 20px;
+    font-size: 12px; font-weight: 700; background: rgba(0,0,0,0.55); color: #7dd3fc;
+  }
   #controls { display: flex; gap: 10px; padding: 14px 16px; background: #000; }
   button {
-    flex: 1; padding: 16px; border: none; border-radius: 12px; font-size: 17px; font-weight: 700;
+    flex: 1; padding: 16px; border: none; border-radius: 12px; font-size: 16px; font-weight: 700;
     background: #2563eb; color: #fff;
   }
   button:disabled { background: #333; color: #777; }
   button.secondaire { background: #333; flex: 0 0 auto; padding: 16px 18px; }
   button.analyse { background: #7c3aed; }
-  #btnCapturer { background: #1e8e3e; font-size: 19px; padding: 20px; display: none; }
+  button.export { background: #0891b2; }
+  #btnCapturer { background: #1e8e3e; font-size: 18px; padding: 20px; flex: 2; }
+  #btnVide { background: #57534e; }
+  #btnGalerieSuivante { background: #1d4ed8; }
   #zoneGalerie { padding: 12px 14px 4px; }
-  #zoneGalerie h2 { font-size: 13px; color: #999; font-weight: 600; margin: 0 0 8px; }
-  #listeVignettes { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; }
+  #zoneGalerie h2 { font-size: 13px; color: #999; font-weight: 600; margin: 14px 0 8px; }
+  #zoneGalerie h2:first-child { margin-top: 0; }
+  #listeGaleries { }
+  .rangeeGalerie { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; }
   .vignette {
     flex: 0 0 auto; width: 78px; height: 78px; border-radius: 10px; overflow: hidden;
     position: relative; border: 2px solid #333; background: #111;
   }
   .vignette img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .vignette.vide {
+    display: flex; align-items: center; justify-content: center;
+    border: 2px dashed #555; background: #1a1a1a; color: #777; font-size: 11px; text-align: center;
+  }
   .vignette .num {
     position: absolute; bottom: 0; left: 0; right: 0; font-size: 10px; text-align: center;
     background: rgba(0,0,0,0.65); color: #fff; padding: 2px 0;
@@ -52,7 +65,7 @@
   .carteAnalyse .infos b { color: #ddd; }
   .carteAnalyse .infos .trouve { color: #4ade80; }
   .carteAnalyse .infos .rien { color: #777; }
-  #noteAnalyse { font-size: 12px; color: #888; padding: 0 14px 10px; }
+  #noteAnalyse, #noteExport { font-size: 12px; color: #888; padding: 0 14px 10px; }
   #lightbox {
     position: fixed; inset: 0; background: rgba(0,0,0,0.94); z-index: 20;
     display: none; flex-direction: column; align-items: center; justify-content: center; padding: 20px;
@@ -67,6 +80,7 @@
 <div id="camWrap">
   <video id="video" autoplay playsinline muted></video>
   <div id="flashVert"></div>
+  <div id="positionOverlay">Galerie 1 · position 1</div>
   <div id="compteurOverlay">0</div>
 </div>
 
@@ -76,12 +90,16 @@
 </div>
 
 <div id="controls" style="padding-top:0;">
-  <button id="btnCapturer">📷 Capturer ce produit</button>
+  <button id="btnCapturer">📷 Capturer</button>
+  <button id="btnVide" class="secondaire">Vide ici</button>
+</div>
+<div id="controls" style="padding-top:0;">
+  <button id="btnGalerieSuivante">Galerie suivante +</button>
 </div>
 
 <div id="zoneGalerie">
   <h2 id="titreGalerie">Aucune capture pour l'instant</h2>
-  <div id="listeVignettes"></div>
+  <div id="listeGaleries"></div>
 </div>
 
 <div id="controls" style="padding-top:0;">
@@ -89,6 +107,11 @@
 </div>
 <div id="noteAnalyse" style="display:none;">Lecture code-barres et texte en local, sur le téléphone — aucun envoi à un serveur. Le premier lancement peut prendre un peu de temps (chargement du moteur de lecture).</div>
 <div id="zoneAnalyse"></div>
+
+<div id="controls" style="padding-top:0;">
+  <button id="btnExporter" class="export" style="display:none;">⬇️ Télécharger tout (ZIP)</button>
+</div>
+<div id="noteExport" style="display:none;">Contient toutes les photos, nommées par galerie/position, plus un fichier releve.json qui décrit toute la structure (y compris les emplacements vides) — dépose-le ensuite dans ton Drive.</div>
 
 <div id="lightbox">
   <img id="lightboxImg" alt="capture en grand">
@@ -103,30 +126,39 @@
 
 <script>
 /* =====================================================================
-   PROTOTYPE — capture MANUELLE (prise automatique mise de côté pour l'instant)
-   Guy declenche lui-meme chaque capture. Objectif de ce test : verifier
-   que la photo prise est suffisamment nette/lisible pour une analyse
-   ulterieure (Gencod, texte), independamment du declenchement automatique.
+   PROTOTYPE — capture MANUELLE, organisee en galeries (colonnes du rayon)
+   Guy declenche lui-meme chaque capture, du haut vers le bas d'une
+   galerie, et passe a la galerie suivante avec un bouton dedie. Un
+   emplacement sans produit peut etre marque "vide" sans photo.
    Rien n'est enregistre dans la pellicule/galerie photo du telephone :
    les images restent en memoire (URL.createObjectURL), propres a la page.
+   Export : zip (photos + releve.json decrivant toute la structure),
+   a deposer ensuite manuellement dans Drive/Gmail.
    ===================================================================== */
 
 let flux = null;
 let audioCtx = null;
-let captures = []; // { seq, blob, url }
+let galerieActuelle = 1;
+let positionActuelle = 0; // position du PROCHAIN item dans la galerie actuelle (avant capture)
+let captures = []; // { seq, galerie, position, type: 'photo'|'vide', blob?, url? }
 
 const video = document.getElementById('video');
 const canvasCapture = document.getElementById('canvasCapture');
 const btnDemarrer = document.getElementById('btnDemarrer');
 const btnArreter = document.getElementById('btnArreter');
 const btnCapturer = document.getElementById('btnCapturer');
+const btnVide = document.getElementById('btnVide');
+const btnGalerieSuivante = document.getElementById('btnGalerieSuivante');
 const flashVert = document.getElementById('flashVert');
 const compteurOverlay = document.getElementById('compteurOverlay');
+const positionOverlay = document.getElementById('positionOverlay');
 const titreGalerie = document.getElementById('titreGalerie');
-const listeVignettes = document.getElementById('listeVignettes');
+const listeGaleries = document.getElementById('listeGaleries');
 const btnAnalyser = document.getElementById('btnAnalyser');
 const noteAnalyse = document.getElementById('noteAnalyse');
 const zoneAnalyse = document.getElementById('zoneAnalyse');
+const btnExporter = document.getElementById('btnExporter');
+const noteExport = document.getElementById('noteExport');
 const lightbox = document.getElementById('lightbox');
 const lightboxImg = document.getElementById('lightboxImg');
 const lightboxLabel = document.getElementById('lightboxLabel');
@@ -150,6 +182,9 @@ btnDemarrer.onclick = async () => {
     btnDemarrer.disabled = true;
     btnArreter.disabled = false;
     btnCapturer.style.display = 'block';
+    btnVide.style.display = 'block';
+    btnGalerieSuivante.style.display = 'block';
+    majPositionOverlay();
   } catch (e) {
     alert("Caméra inaccessible : " + e.message);
   }
@@ -159,13 +194,31 @@ btnArreter.onclick = () => {
   if (flux) { flux.getTracks().forEach(t => t.stop()); flux = null; }
   btnDemarrer.disabled = false;
   btnArreter.disabled = true;
-  btnCapturer.style.display = 'none';
 };
 
 btnCapturer.onclick = () => {
   if (!flux || video.readyState < 2) return;
   declencherCapture();
 };
+
+btnVide.onclick = () => {
+  positionActuelle++;
+  captures.push({ seq: captures.length + 1, galerie: galerieActuelle, position: positionActuelle, type: 'vide' });
+  window.__captures = captures;
+  compteurOverlay.textContent = String(captures.length);
+  majPositionOverlay();
+  rendreGalerie();
+};
+
+btnGalerieSuivante.onclick = () => {
+  galerieActuelle++;
+  positionActuelle = 0;
+  majPositionOverlay();
+};
+
+function majPositionOverlay() {
+  positionOverlay.textContent = `Galerie ${galerieActuelle} · position ${positionActuelle + 1}`;
+}
 
 // ---- capture haute resolution ----
 function declencherCapture() {
@@ -177,13 +230,14 @@ function declencherCapture() {
   ctxC.drawImage(video, 0, 0, largeur, hauteur);
   canvasCapture.toBlob((blob) => {
     if (!blob) return;
-    const seq = captures.length + 1;
+    positionActuelle++;
     const url = URL.createObjectURL(blob);
-    captures.push({ seq, blob, url });
+    captures.push({ seq: captures.length + 1, galerie: galerieActuelle, position: positionActuelle, type: 'photo', blob, url });
     window.__captures = captures;
     afficherConfirmation();
+    majPositionOverlay();
     rendreGalerie();
-    console.log('[CAPTURE]', seq, 'taille=', blob.size, 'octets', largeur + 'x' + hauteur);
+    console.log('[CAPTURE]', 'galerie=', galerieActuelle, 'position=', positionActuelle, 'taille=', blob.size, 'octets', largeur + 'x' + hauteur);
   }, 'image/jpeg', 0.85);
 }
 
@@ -208,42 +262,71 @@ function beep() {
   } catch (e) { /* silencieux si le son echoue, ne bloque pas la capture */ }
 }
 
-// ---- galerie ----
+// ---- renumerotation apres suppression : position recalculee PAR galerie, ordre conserve ----
+function renumeroter() {
+  const parGalerie = {};
+  captures.forEach((c) => {
+    if (!parGalerie[c.galerie]) parGalerie[c.galerie] = 0;
+    parGalerie[c.galerie]++;
+    c.position = parGalerie[c.galerie];
+  });
+  captures.forEach((c, i) => { c.seq = i + 1; });
+}
+
+// ---- galerie (affichage groupe par galerie/colonne) ----
 function rendreGalerie() {
   if (captures.length === 0) {
     titreGalerie.textContent = 'Aucune capture pour l\'instant';
-    listeVignettes.innerHTML = '';
+    listeGaleries.innerHTML = '';
     btnAnalyser.style.display = 'none';
     noteAnalyse.style.display = 'none';
+    btnExporter.style.display = 'none';
+    noteExport.style.display = 'none';
     return;
   }
-  titreGalerie.textContent = `${captures.length} produit${captures.length > 1 ? 's' : ''} capturé${captures.length > 1 ? 's' : ''}`;
-  listeVignettes.innerHTML = captures.map((c, i) => `
-    <div class="vignette" data-idx="${i}">
-      <img src="${c.url}" alt="capture ${c.seq}">
-      <div class="num">${String(i + 1).padStart(3, '0')}</div>
-    </div>
-  `).join('');
-  [...listeVignettes.querySelectorAll('.vignette')].forEach(el => {
+  const nbPhotos = captures.filter(c => c.type === 'photo').length;
+  const nbVides = captures.filter(c => c.type === 'vide').length;
+  titreGalerie.textContent = `${nbPhotos} produit${nbPhotos > 1 ? 's' : ''} capturé${nbPhotos > 1 ? 's' : ''}${nbVides ? ' · ' + nbVides + ' vide' + (nbVides > 1 ? 's' : '') : ''}`;
+
+  const galeries = [...new Set(captures.map(c => c.galerie))].sort((a, b) => a - b);
+  listeGaleries.innerHTML = galeries.map((g) => {
+    const items = captures.filter(c => c.galerie === g);
+    const vignettes = items.map((c) => {
+      const idxGlobal = captures.indexOf(c);
+      if (c.type === 'vide') {
+        return `<div class="vignette vide" data-idx="${idxGlobal}">vide<br>#${c.position}</div>`;
+      }
+      return `<div class="vignette" data-idx="${idxGlobal}">
+        <img src="${c.url}" alt="capture galerie ${c.galerie} position ${c.position}">
+        <div class="num">${String(c.position).padStart(3, '0')}</div>
+      </div>`;
+    }).join('');
+    return `<h2>Galerie ${g}</h2><div class="rangeeGalerie">${vignettes}</div>`;
+  }).join('');
+
+  [...listeGaleries.querySelectorAll('.vignette')].forEach(el => {
     el.onclick = () => ouvrirLightbox(parseInt(el.dataset.idx, 10));
   });
   btnAnalyser.style.display = 'block';
   noteAnalyse.style.display = 'block';
+  btnExporter.style.display = 'block';
+  noteExport.style.display = 'block';
 }
 
 let idxCourant = null;
 function ouvrirLightbox(idx) {
-  idxCourant = idx;
   const c = captures[idx];
+  if (c.type === 'vide') return; // rien a afficher en grand pour un emplacement vide
+  idxCourant = idx;
   lightboxImg.src = c.url;
-  lightboxLabel.textContent = `Capture ${String(idx + 1).padStart(3, '0')} sur ${captures.length}`;
+  lightboxLabel.textContent = `Galerie ${c.galerie} · position ${c.position}`;
   lightbox.style.display = 'flex';
 }
 btnFermerLightbox.onclick = () => { lightbox.style.display = 'none'; };
 btnSupprimer.onclick = () => {
   if (idxCourant === null) return;
   captures.splice(idxCourant, 1);
-  captures.forEach((c, i) => c.seq = i + 1); // renumerotation, ordre conserve
+  renumeroter();
   window.__captures = captures;
   compteurOverlay.textContent = String(captures.length);
   lightbox.style.display = 'none';
@@ -279,13 +362,13 @@ btnAnalyser.onclick = async () => {
 
   const lecteurBarres = new ZXing.BrowserMultiFormatReader();
 
-  for (const c of captures) {
+  for (const c of captures.filter(c => c.type === 'photo')) {
     const carte = document.createElement('div');
     carte.className = 'carteAnalyse';
     carte.innerHTML = `
-      <img src="${c.url}" alt="capture ${c.seq}">
+      <img src="${c.url}" alt="capture galerie ${c.galerie} position ${c.position}">
       <div class="infos">
-        <div><b>Capture ${String(c.seq).padStart(3, '0')}</b></div>
+        <div><b>Galerie ${c.galerie} · position ${c.position}</b></div>
         <div class="gencod">Gencod : recherche...</div>
         <div class="ocr">Texte : lecture en cours...</div>
       </div>`;
@@ -316,6 +399,49 @@ btnAnalyser.onclick = async () => {
 
   btnAnalyser.disabled = false;
   btnAnalyser.textContent = 'RE-ANALYSER';
+};
+
+// ---- export ZIP (photos + releve.json decrivant toute la structure galerie/position/vide) ----
+let jszipCharge = false;
+btnExporter.onclick = async () => {
+  btnExporter.disabled = true;
+  btnExporter.textContent = 'Préparation du zip...';
+  try {
+    if (!jszipCharge) {
+      await chargerScript('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js');
+      jszipCharge = true;
+    }
+    const zip = new JSZip();
+    const releve = { genere_le: new Date().toISOString(), galeries: {} };
+
+    for (const c of captures) {
+      const cle = String(c.galerie);
+      if (!releve.galeries[cle]) releve.galeries[cle] = [];
+      if (c.type === 'photo') {
+        const nomFichier = `galerie${String(c.galerie).padStart(2, '0')}_position${String(c.position).padStart(2, '0')}.jpg`;
+        zip.file(nomFichier, c.blob);
+        releve.galeries[cle].push({ position: c.position, type: 'photo', fichier: nomFichier });
+      } else {
+        releve.galeries[cle].push({ position: c.position, type: 'vide' });
+      }
+    }
+    zip.file('releve.json', JSON.stringify(releve, null, 2));
+
+    const contenuZip = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(contenuZip);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `releve-rayon-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    console.log('[EXPORT]', 'zip genere,', captures.length, 'entrees');
+  } catch (e) {
+    alert("Échec de l'export : " + (e.message || e));
+  }
+  btnExporter.disabled = false;
+  btnExporter.textContent = '⬇️ Télécharger tout (ZIP)';
 };
 </script>
 </body>
