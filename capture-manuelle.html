@@ -75,8 +75,8 @@
   #titreGalerie { font-size: 13px; color: #999; font-weight: 600; margin: 0 0 10px; }
   #listeGaleries { }
   #planRayon {
-    display: flex; flex-direction: row; align-items: flex-start; gap: 12px;
-    overflow-x: auto; padding-bottom: 8px;
+    display: flex; flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 12px 10px;
+    padding-bottom: 8px;
   }
   .colonneGalerie { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 6px; }
   #planRayonLignes { display: flex; flex-direction: column; gap: 14px; }
@@ -86,6 +86,12 @@
     font-size: 11px; color: #7dd3fc; font-weight: 700; margin-bottom: 2px;
     background: #10151d; border-radius: 6px; padding: 2px 8px; display: inline-block;
   }
+  /* repere visuel pour retrouver facilement la galerie/ligne EN COURS au milieu de beaucoup
+     d'autres (ex: 30 galeries) : etiquette en surbrillance + leger cadre autour du groupe */
+  .colonneGalerie.enCours, .rangeeLigne.enCours { position: relative; }
+  .colonneGalerie.enCours { padding: 4px; margin: -4px; border-radius: 10px; background: rgba(29,78,216,0.14); }
+  .rangeeLigne.enCours { padding: 4px 6px; margin: -4px -6px; border-radius: 10px; background: rgba(29,78,216,0.14); }
+  .enCours .etiquetteGalerie { background: #1d4ed8; color: #fff; }
   .vignette {
     flex: 0 0 auto; width: 62px; aspect-ratio: 3/4; border-radius: 10px; overflow: hidden;
     position: relative; border: 2px solid #333; background: #111;
@@ -544,14 +550,16 @@ function rendreGalerie() {
       const lignes = groupes.map((g) => {
         const items = visibles.filter(c => c.galerie === g).sort((a, b) => a.position - b.position);
         const cases = items.map(caseVignette).join('');
-        return `<div class="rangeeLigne"><div class="etiquetteGalerie">${etq} ${g}</div><div class="rangeeBoites">${cases}</div></div>`;
+        const enCours = g === galerieActuelle ? ' enCours' : '';
+        return `<div class="rangeeLigne${enCours}"><div class="etiquetteGalerie">${etq} ${g}</div><div class="rangeeBoites">${cases}</div></div>`;
       }).join('');
       listeGaleries.innerHTML = `<div id="planRayonLignes">${lignes}</div>`;
     } else {
       const colonnes = groupes.map((g) => {
         const items = visibles.filter(c => c.galerie === g).sort((a, b) => a.position - b.position);
         const cases = items.map(caseVignette).join('');
-        return `<div class="colonneGalerie"><div class="etiquetteGalerie">${etq} ${g}</div>${cases}</div>`;
+        const enCours = g === galerieActuelle ? ' enCours' : '';
+        return `<div class="colonneGalerie${enCours}"><div class="etiquetteGalerie">${etq} ${g}</div>${cases}</div>`;
       }).join('');
       listeGaleries.innerHTML = `<div id="planRayon">${colonnes}</div>`;
     }
