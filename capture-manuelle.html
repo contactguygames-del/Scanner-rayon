@@ -75,9 +75,15 @@
   #titreGalerie { font-size: 13px; color: #999; font-weight: 600; margin: 0 0 10px; }
   #listeGaleries { }
   #planRayon {
-    display: flex; flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 12px 10px;
-    padding-bottom: 8px;
+    display: flex; flex-direction: row; align-items: flex-start; gap: 10px;
+    overflow-x: auto; padding-bottom: 8px; scroll-behavior: smooth;
   }
+  #navGaleries {
+    display: none; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px;
+  }
+  #navGaleries button { flex: 0 0 auto; padding: 10px 16px; font-size: 16px; }
+  #navGaleries #btnAllerEnCours { flex: 1 1 auto; font-size: 12.5px; padding: 10px 12px; background: #1d4ed8; }
+  #indicateurGaleries { font-size: 11.5px; color: #888; white-space: nowrap; }
   .colonneGalerie { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 6px; }
   #planRayonLignes { display: flex; flex-direction: column; gap: 14px; }
   .rangeeLigne { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
@@ -161,6 +167,12 @@
 
 <div id="zoneGalerie">
   <h2 id="titreGalerie">Aucune capture pour l'instant</h2>
+  <div id="navGaleries">
+    <button id="btnGaleriePrec" class="secondaire">◀</button>
+    <span id="indicateurGaleries"></span>
+    <button id="btnGalerieSuiv" class="secondaire">▶</button>
+    <button id="btnAllerEnCours" class="secondaire">🎯 en cours</button>
+  </div>
   <div id="listeGaleries"></div>
 </div>
 
@@ -226,6 +238,11 @@ const flashVert = document.getElementById('flashVert');
 const compteurOverlay = document.getElementById('compteurOverlay');
 const positionOverlay = document.getElementById('positionOverlay');
 const titreGalerie = document.getElementById('titreGalerie');
+const navGaleries = document.getElementById('navGaleries');
+const indicateurGaleries = document.getElementById('indicateurGaleries');
+const btnGaleriePrec = document.getElementById('btnGaleriePrec');
+const btnGalerieSuiv = document.getElementById('btnGalerieSuiv');
+const btnAllerEnCours = document.getElementById('btnAllerEnCours');
 const listeGaleries = document.getElementById('listeGaleries');
 const etiquetteEnCours = document.getElementById('etiquetteEnCours');
 const pileEnCours = document.getElementById('pileEnCours');
@@ -379,6 +396,29 @@ btnGalerieSuivante.onclick = () => {
   sauverEtatDB();
 };
 
+// ---- navigation horizontale du plan (mode sachet) : les galeries restent cote a cote comme
+// dans le rayon reel, mais des fleches permettent d'avancer/reculer sans avoir a faire glisser
+// le doigt sur tout l'ecran quand il y en a beaucoup (ex: 30 galeries) ----
+function largeurPasDefilement() {
+  const plan = document.getElementById('planRayon');
+  if (!plan) return 300;
+  const colonne = plan.querySelector('.colonneGalerie');
+  return colonne ? colonne.offsetWidth + 10 : plan.clientWidth * 0.8;
+}
+btnGaleriePrec.onclick = () => {
+  const plan = document.getElementById('planRayon');
+  if (plan) plan.scrollBy({ left: -largeurPasDefilement(), behavior: 'smooth' });
+};
+btnGalerieSuiv.onclick = () => {
+  const plan = document.getElementById('planRayon');
+  if (plan) plan.scrollBy({ left: largeurPasDefilement(), behavior: 'smooth' });
+};
+btnAllerEnCours.onclick = () => {
+  const plan = document.getElementById('planRayon');
+  const cible = plan && plan.querySelector('.colonneGalerie.enCours');
+  if (cible) cible.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+};
+
 function majPositionOverlay() {
   positionOverlay.textContent = `${etiquetteGroupe()} ${galerieActuelle} · position ${positionActuelle + 1}`;
 }
@@ -513,6 +553,7 @@ function rendreGalerie() {
   if (captures.length === 0) {
     titreGalerie.textContent = 'Aucune capture pour l\'instant';
     listeGaleries.innerHTML = '';
+    navGaleries.style.display = 'none';
     btnAnalyser.style.display = 'none';
     noteAnalyse.style.display = 'none';
     btnExporter.style.display = 'none';
@@ -525,6 +566,7 @@ function rendreGalerie() {
   if (visibles.length === 0) {
     titreGalerie.textContent = `Aucun produit capturé dans ce mode pour l'instant (l'autre mode a ${captures.length} élément(s))`;
     listeGaleries.innerHTML = '';
+    navGaleries.style.display = 'none';
   } else {
     const nbPhotos = visibles.filter(c => c.type === 'photo').length;
     const nbVides = visibles.filter(c => c.type === 'vide').length;
@@ -554,6 +596,7 @@ function rendreGalerie() {
         return `<div class="rangeeLigne${enCours}"><div class="etiquetteGalerie">${etq} ${g}</div><div class="rangeeBoites">${cases}</div></div>`;
       }).join('');
       listeGaleries.innerHTML = `<div id="planRayonLignes">${lignes}</div>`;
+      navGaleries.style.display = 'none'; // les lignes s'empilent deja verticalement, pas besoin de fleches
     } else {
       const colonnes = groupes.map((g) => {
         const items = visibles.filter(c => c.galerie === g).sort((a, b) => a.position - b.position);
@@ -562,6 +605,10 @@ function rendreGalerie() {
         return `<div class="colonneGalerie${enCours}"><div class="etiquetteGalerie">${etq} ${g}</div>${cases}</div>`;
       }).join('');
       listeGaleries.innerHTML = `<div id="planRayon">${colonnes}</div>`;
+      // les galeries restent cote a cote (comme dans le rayon reel) : la barre de navigation
+      // (fleches + raccourci "en cours") n'est utile que quand il y en a plusieurs
+      navGaleries.style.display = groupes.length > 1 ? 'flex' : 'none';
+      indicateurGaleries.textContent = `${groupes.length} galerie${groupes.length > 1 ? 's' : ''}`;
     }
 
     [...listeGaleries.querySelectorAll('.vignette')].forEach(el => {
