@@ -132,15 +132,17 @@
 // ---- constantes reglables ----
 const ANALYSE_LARGEUR = 192;
 const ANALYSE_HAUTEUR = 144;
-const SEUIL_MOUVEMENT = 16;             // en dessous = considere stable (assoupli suite au 1er test terrain : trop strict a l'origine)
-const SEUIL_NETTETE = 8;                // au dessus = considere net (assoupli, idem)
+// Seuils calibres avec de vraies mesures du telephone de Guy (2e test terrain) :
+// au repos, mouvement lisse mesure entre 6 et 12, nettete mesuree autour de 2500.
+const SEUIL_MOUVEMENT = 20;             // en dessous = considere stable (marge au-dessus du repos reel mesure a 6-12)
+const SEUIL_NETTETE = 150;              // au dessus = considere net (marge x15+ sous la nettete reelle mesuree ~2500, garde un vrai filtre anti-flou)
 const SEUIL_NETTETE_PLANCHER = 4;       // netteté minimale absolue pour le filet de securite (evite de capturer une image totalement degeneree)
 const DUREE_STABILISATION_MS = 450;     // duree continue stable+net avant capture
-const SEUIL_MOUVEMENT_REARMEMENT = 22;  // mouvement pour sortir de VERROUILLE
+const SEUIL_MOUVEMENT_REARMEMENT = 18;  // mouvement pour sortir de VERROUILLE (volontairement pas plus haut que SEUIL_MOUVEMENT : mieux vaut rearmer un peu trop facilement que de rester bloque)
 const DUREE_REARMEMENT_MS = 300;        // duree continue de mouvement pour rearmer
 const INTERVALLE_ANALYSE_MS = 110;      // ~9 analyses par seconde
 const LISSAGE_MOUVEMENT = 0.35;         // moyenne mobile : absorbe le bruit capteur (grain, micro-tremblement)
-const TOLERANCE_TICKS_MAUVAIS = 2;      // nb de mesures ponctuellement mauvaises tolerees avant d'annuler la stabilisation
+const TOLERANCE_TICKS_MAUVAIS = 6;      // nb de mesures consecutives mauvaises tolerees avant d'annuler (~700ms : survit a la chasse d'autofocus/exposition)
 const DUREE_MAX_ATTENTE_MS = 3000;      // filet de securite : si ca fait plus de 3s qu'on essaie sans y arriver, on capture quand meme
 
 // ---- etat ----
