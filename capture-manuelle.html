@@ -10,12 +10,40 @@
     margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif;
     background: #0b0f0c; color: #eee; min-height: 100vh; display: flex; flex-direction: column;
   }
+  #zoneCapture {
+    display: flex; flex-direction: row; align-items: stretch; gap: 10px;
+    padding: 10px 14px 0;
+  }
   #camWrap {
-    position: relative; width: 46%; max-width: 250px; margin: 10px auto 0;
+    position: relative; width: 42%; max-width: 190px;
     aspect-ratio: 3/4; background: #000; overflow: hidden; border-radius: 14px;
     flex: 0 0 auto;
   }
   video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #galerieEnCours {
+    flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0;
+    background: #131313; border-radius: 12px; padding: 8px; overflow: hidden;
+  }
+  #etiquetteEnCours {
+    font-size: 11px; color: #7dd3fc; font-weight: 700; margin-bottom: 6px; flex: 0 0 auto;
+  }
+  #pileEnCours {
+    flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;
+  }
+  #pileEnCours .videSpanVide { color: #666; font-size: 12px; padding: 4px 0; }
+  .miniVignette {
+    flex: 0 0 auto; width: 100%; height: 54px; border-radius: 8px; overflow: hidden;
+    position: relative; border: 2px solid #333; background: #111; display: flex;
+  }
+  .miniVignette img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .miniVignette.vide {
+    align-items: center; justify-content: center;
+    border: 2px dashed #555; background: #1a1a1a; color: #777; font-size: 11px;
+  }
+  .miniVignette .num {
+    position: absolute; bottom: 0; left: 0; right: 0; font-size: 9px; text-align: center;
+    background: rgba(0,0,0,0.65); color: #fff; padding: 1px 0;
+  }
   #flashVert {
     position: absolute; inset: 0; background: rgba(30,142,62,0.55); opacity: 0;
     pointer-events: none; transition: opacity 0.12s ease-out;
@@ -88,11 +116,17 @@
 </head>
 <body>
 
-<div id="camWrap">
-  <video id="video" autoplay playsinline muted></video>
-  <div id="flashVert"></div>
-  <div id="positionOverlay">Galerie 1 · position 1</div>
-  <div id="compteurOverlay">0</div>
+<div id="zoneCapture">
+  <div id="camWrap">
+    <video id="video" autoplay playsinline muted></video>
+    <div id="flashVert"></div>
+    <div id="positionOverlay">Galerie 1 · position 1</div>
+    <div id="compteurOverlay">0</div>
+  </div>
+  <div id="galerieEnCours">
+    <div id="etiquetteEnCours">Galerie 1 en cours</div>
+    <div id="pileEnCours"><div class="videSpanVide">Rien capturé pour l'instant</div></div>
+  </div>
 </div>
 
 <div id="controls">
@@ -165,6 +199,8 @@ const compteurOverlay = document.getElementById('compteurOverlay');
 const positionOverlay = document.getElementById('positionOverlay');
 const titreGalerie = document.getElementById('titreGalerie');
 const listeGaleries = document.getElementById('listeGaleries');
+const etiquetteEnCours = document.getElementById('etiquetteEnCours');
+const pileEnCours = document.getElementById('pileEnCours');
 const btnAnalyser = document.getElementById('btnAnalyser');
 const noteAnalyse = document.getElementById('noteAnalyse');
 const zoneAnalyse = document.getElementById('zoneAnalyse');
@@ -219,16 +255,43 @@ btnVide.onclick = () => {
   compteurOverlay.textContent = String(captures.length);
   majPositionOverlay();
   rendreGalerie();
+  rendreGalerieEnCours();
 };
 
 btnGalerieSuivante.onclick = () => {
   galerieActuelle++;
   positionActuelle = 0;
   majPositionOverlay();
+  rendreGalerieEnCours();
 };
 
 function majPositionOverlay() {
   positionOverlay.textContent = `Galerie ${galerieActuelle} · position ${positionActuelle + 1}`;
+}
+
+// ---- panneau "galerie en cours" : a cote du cadre de prise de vue, visible SANS scroller,
+// montre en direct les captures (et vides) de la galerie en train d'etre prise, top -> bas ----
+function rendreGalerieEnCours() {
+  etiquetteEnCours.textContent = `Galerie ${galerieActuelle} en cours`;
+  const items = captures.filter(c => c.galerie === galerieActuelle).sort((a, b) => a.position - b.position);
+  if (items.length === 0) {
+    pileEnCours.innerHTML = '<div class="videSpanVide">Rien capturé pour l\'instant</div>';
+    return;
+  }
+  pileEnCours.innerHTML = items.map((c) => {
+    const idxGlobal = captures.indexOf(c);
+    if (c.type === 'vide') {
+      return `<div class="miniVignette vide" data-idx="${idxGlobal}">vide #${c.position}</div>`;
+    }
+    return `<div class="miniVignette" data-idx="${idxGlobal}">
+      <img src="${c.url}" alt="capture galerie ${c.galerie} position ${c.position}">
+      <div class="num">${String(c.position).padStart(3, '0')}</div>
+    </div>`;
+  }).join('');
+  [...pileEnCours.querySelectorAll('.miniVignette')].forEach(el => {
+    el.onclick = () => ouvrirLightbox(parseInt(el.dataset.idx, 10));
+  });
+  pileEnCours.scrollTop = pileEnCours.scrollHeight; // garde la derniere capture visible
 }
 
 // ---- capture haute resolution ----
@@ -248,6 +311,7 @@ function declencherCapture() {
     afficherConfirmation();
     majPositionOverlay();
     rendreGalerie();
+    rendreGalerieEnCours();
     console.log('[CAPTURE]', 'galerie=', galerieActuelle, 'position=', positionActuelle, 'taille=', blob.size, 'octets', largeur + 'x' + hauteur);
   }, 'image/jpeg', 0.85);
 }
@@ -345,6 +409,7 @@ btnSupprimer.onclick = () => {
   compteurOverlay.textContent = String(captures.length);
   lightbox.style.display = 'none';
   rendreGalerie();
+  rendreGalerieEnCours();
 };
 
 // ---- analyse differee : code-barres (ZXing) + OCR (Tesseract.js), 100% local, sans compte ni cle API ----
