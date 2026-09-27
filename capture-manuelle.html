@@ -159,6 +159,11 @@
 </div>
 <div id="noteExport" style="display:none;">Contient toutes les photos, nommées par galerie/position, plus un fichier releve.json qui décrit toute la structure (y compris les emplacements vides) — dépose-le ensuite dans ton Drive.</div>
 
+<div id="controls" style="padding-top:0; padding-bottom:22px;">
+  <button id="btnNouvelleSession" class="secondaire" style="flex:1;">🗑️ Nouvelle session (efface tout)</button>
+</div>
+<div id="noteSession" style="font-size:12px; color:#666; padding:0 14px 16px; margin-top:-14px;">Chaque capture est sauvegardée automatiquement sur le téléphone au fur et à mesure — si l'appli plante ou se ferme par erreur, elle te proposera de reprendre au redémarrage.</div>
+
 <div id="lightbox">
   <img id="lightboxImg" alt="capture en grand">
   <div id="lightboxLabel"></div>
@@ -212,8 +217,87 @@ const lightboxImg = document.getElementById('lightboxImg');
 const lightboxLabel = document.getElementById('lightboxLabel');
 const btnFermerLightbox = document.getElementById('btnFermerLightbox');
 const btnSupprimer = document.getElementById('btnSupprimer');
+const btnNouvelleSession = document.getElementById('btnNouvelleSession');
 
 window.__captures = captures; // pour verification/debug externe
+
+// ---- persistance locale (IndexedDB) : sauvegarde CHAQUE capture immediatement,
+// pour ne rien perdre en cas de plantage, fermeture accidentelle ou manque de batterie.
+// Ca ne quitte jamais le telephone (aucun envoi reseau), c'est juste un filet de securite
+// local ; l'export ZIP reste la seule facon de sortir les donnees de la page. ----
+const NOM_DB = 'scanner_rayon_capture_manuelle';
+let dbPromise = null;
+
+function ouvrirDB() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    if (!window.indexedDB) { reject(new Error('IndexedDB indisponible')); return; }
+    const req = indexedDB.open(NOM_DB, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('captures')) db.createObjectStore('captures', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('etat')) db.createObjectStore('etat', { keyPath: 'cle' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+
+function idUnique() {
+  return Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+}
+
+async function sauverCaptureDB(c) {
+  try {
+    const db = await ouvrirDB();
+    const { url, ...sansUrl } = c; // l'URL objet ne survit pas a un rechargement, on ne garde que le blob
+    db.transaction('captures', 'readwrite').objectStore('captures').put(sansUrl);
+  } catch (e) { console.log('[SAVE] echec sauvegarde capture (pas bloquant) :', e.message || e); }
+}
+
+async function supprimerCaptureDB(id) {
+  try {
+    const db = await ouvrirDB();
+    db.transaction('captures', 'readwrite').objectStore('captures').delete(id);
+  } catch (e) { console.log('[SAVE] echec suppression capture (pas bloquant) :', e.message || e); }
+}
+
+async function sauverEtatDB() {
+  try {
+    const db = await ouvrirDB();
+    db.transaction('etat', 'readwrite').objectStore('etat').put({ cle: 'etat', galerieActuelle, positionActuelle });
+  } catch (e) { console.log('[SAVE] echec sauvegarde etat (pas bloquant) :', e.message || e); }
+}
+
+async function effacerSessionDB() {
+  try {
+    const db = await ouvrirDB();
+    const tx = db.transaction(['captures', 'etat'], 'readwrite');
+    tx.objectStore('captures').clear();
+    tx.objectStore('etat').clear();
+  } catch (e) { console.log('[SAVE] echec effacement session (pas bloquant) :', e.message || e); }
+}
+
+async function chargerSessionDB() {
+  try {
+    const db = await ouvrirDB();
+    const sauvegardees = await new Promise((resolve, reject) => {
+      const req = db.transaction('captures', 'readonly').objectStore('captures').getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+    const etat = await new Promise((resolve, reject) => {
+      const req = db.transaction('etat', 'readonly').objectStore('etat').get('etat');
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+    return { sauvegardees, etat };
+  } catch (e) {
+    console.log('[SAVE] echec chargement session (pas bloquant) :', e.message || e);
+    return { sauvegardees: [], etat: null };
+  }
+}
 
 // ---- demarrage / arret ----
 btnDemarrer.onclick = async () => {
@@ -251,12 +335,15 @@ btnCapturer.onclick = () => {
 
 btnVide.onclick = () => {
   positionActuelle++;
-  captures.push({ seq: captures.length + 1, galerie: galerieActuelle, position: positionActuelle, type: 'vide' });
+  const entree = { id: idUnique(), seq: captures.length + 1, galerie: galerieActuelle, position: positionActuelle, type: 'vide' };
+  captures.push(entree);
   window.__captures = captures;
   compteurOverlay.textContent = String(captures.length);
   majPositionOverlay();
   rendreGalerie();
   rendreGalerieEnCours();
+  sauverCaptureDB(entree);
+  sauverEtatDB();
 };
 
 btnGalerieSuivante.onclick = () => {
@@ -264,6 +351,7 @@ btnGalerieSuivante.onclick = () => {
   positionActuelle = 0;
   majPositionOverlay();
   rendreGalerieEnCours();
+  sauverEtatDB();
 };
 
 function majPositionOverlay() {
@@ -307,12 +395,15 @@ function declencherCapture() {
     if (!blob) return;
     positionActuelle++;
     const url = URL.createObjectURL(blob);
-    captures.push({ seq: captures.length + 1, galerie: galerieActuelle, position: positionActuelle, type: 'photo', blob, url });
+    const entree = { id: idUnique(), seq: captures.length + 1, galerie: galerieActuelle, position: positionActuelle, type: 'photo', blob, url };
+    captures.push(entree);
     window.__captures = captures;
     afficherConfirmation();
     majPositionOverlay();
     rendreGalerie();
     rendreGalerieEnCours();
+    sauverCaptureDB(entree);
+    sauverEtatDB();
     console.log('[CAPTURE]', 'galerie=', galerieActuelle, 'position=', positionActuelle, 'taille=', blob.size, 'octets', largeur + 'x' + hauteur);
   }, 'image/jpeg', 0.85);
 }
@@ -404,7 +495,7 @@ function ouvrirLightbox(idx) {
 btnFermerLightbox.onclick = () => { lightbox.style.display = 'none'; };
 btnSupprimer.onclick = () => {
   if (idxCourant === null) return;
-  captures.splice(idxCourant, 1);
+  const [supprimee] = captures.splice(idxCourant, 1);
   renumeroter();
   // resynchronise le compteur de la galerie EN COURS sur le nombre reel de captures
   // restantes : sans ca, une suppression au milieu d'une galerie laissait le prochain
@@ -416,6 +507,9 @@ btnSupprimer.onclick = () => {
   majPositionOverlay();
   rendreGalerie();
   rendreGalerieEnCours();
+  if (supprimee) supprimerCaptureDB(supprimee.id);
+  captures.forEach(c => sauverCaptureDB(c)); // seq/position ont pu changer sur tout le reste -> resauvegarde
+  sauverEtatDB();
 };
 
 // ---- analyse differee : code-barres (ZXing) + OCR (Tesseract.js), 100% local, sans compte ni cle API ----
@@ -528,6 +622,48 @@ btnExporter.onclick = async () => {
   btnExporter.disabled = false;
   btnExporter.textContent = '⬇️ Télécharger tout (ZIP)';
 };
+
+// ---- nouvelle session : efface tout (memoire + sauvegarde locale), pour repartir a zero ----
+btnNouvelleSession.onclick = async () => {
+  if (captures.length > 0 && !confirm(`Effacer les ${captures.length} capture(s) actuelle(s) et repartir à zéro ? Cette action est définitive (pense à exporter le zip avant si besoin).`)) return;
+  captures = [];
+  window.__captures = captures;
+  galerieActuelle = 1;
+  positionActuelle = 0;
+  await effacerSessionDB();
+  compteurOverlay.textContent = '0';
+  majPositionOverlay();
+  rendreGalerie();
+  rendreGalerieEnCours();
+};
+
+// ---- reprise automatique au demarrage : si une session non exportee existe deja sur ce
+// telephone (plantage, fermeture accidentelle...), on propose de la reprendre plutot que
+// de la perdre silencieusement. ----
+(async function restaurerSessionAuDemarrage() {
+  const { sauvegardees, etat } = await chargerSessionDB();
+  if (!sauvegardees || sauvegardees.length === 0) return;
+  const reprendre = confirm(`Une session précédente non exportée a été retrouvée sur ce téléphone (${sauvegardees.length} élément(s)).\n\nOK = la reprendre\nAnnuler = l'effacer et repartir à zéro`);
+  if (reprendre) {
+    sauvegardees.sort((a, b) => a.seq - b.seq);
+    sauvegardees.forEach((c) => { if (c.type === 'photo' && c.blob) c.url = URL.createObjectURL(c.blob); });
+    captures = sauvegardees;
+    window.__captures = captures;
+    if (etat && etat.galerieActuelle) {
+      galerieActuelle = etat.galerieActuelle;
+      positionActuelle = etat.positionActuelle || 0;
+    } else if (captures.length > 0) {
+      galerieActuelle = Math.max(...captures.map(c => c.galerie));
+      positionActuelle = captures.filter(c => c.galerie === galerieActuelle).length;
+    }
+    compteurOverlay.textContent = String(captures.length);
+    majPositionOverlay();
+    rendreGalerie();
+    rendreGalerieEnCours();
+  } else {
+    await effacerSessionDB();
+  }
+})();
 </script>
 </body>
 </html>
