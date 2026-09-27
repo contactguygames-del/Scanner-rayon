@@ -10,19 +10,23 @@
     margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif;
     background: #0b0f0c; color: #eee; min-height: 100vh; display: flex; flex-direction: column;
   }
-  #camWrap { position: relative; width: 100%; aspect-ratio: 3/4; background: #000; overflow: hidden; }
+  #camWrap {
+    position: relative; width: 46%; max-width: 250px; margin: 10px auto 0;
+    aspect-ratio: 3/4; background: #000; overflow: hidden; border-radius: 14px;
+    flex: 0 0 auto;
+  }
   video { width: 100%; height: 100%; object-fit: cover; display: block; }
   #flashVert {
     position: absolute; inset: 0; background: rgba(30,142,62,0.55); opacity: 0;
     pointer-events: none; transition: opacity 0.12s ease-out;
   }
   #compteurOverlay {
-    position: absolute; top: 12px; right: 12px; padding: 5px 12px; border-radius: 20px;
-    font-size: 13px; font-weight: 800; background: rgba(0,0,0,0.55); color: #fff;
+    position: absolute; top: 8px; right: 8px; padding: 4px 9px; border-radius: 20px;
+    font-size: 11px; font-weight: 800; background: rgba(0,0,0,0.55); color: #fff;
   }
   #positionOverlay {
-    position: absolute; top: 12px; left: 12px; padding: 5px 12px; border-radius: 20px;
-    font-size: 12px; font-weight: 700; background: rgba(0,0,0,0.55); color: #7dd3fc;
+    position: absolute; top: 8px; left: 8px; padding: 4px 9px; border-radius: 20px;
+    font-size: 10px; font-weight: 700; background: rgba(0,0,0,0.55); color: #7dd3fc;
   }
   #controls { display: flex; gap: 10px; padding: 14px 16px; background: #000; }
   button {
@@ -37,12 +41,19 @@
   #btnVide { background: #57534e; }
   #btnGalerieSuivante { background: #1d4ed8; }
   #zoneGalerie { padding: 12px 14px 4px; }
-  #zoneGalerie h2 { font-size: 13px; color: #999; font-weight: 600; margin: 14px 0 8px; }
-  #zoneGalerie h2:first-child { margin-top: 0; }
+  #titreGalerie { font-size: 13px; color: #999; font-weight: 600; margin: 0 0 10px; }
   #listeGaleries { }
-  .rangeeGalerie { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; }
+  #planRayon {
+    display: flex; flex-direction: row; align-items: flex-start; gap: 12px;
+    overflow-x: auto; padding-bottom: 8px;
+  }
+  .colonneGalerie { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .etiquetteGalerie {
+    font-size: 11px; color: #7dd3fc; font-weight: 700; margin-bottom: 2px;
+    background: #10151d; border-radius: 6px; padding: 2px 8px;
+  }
   .vignette {
-    flex: 0 0 auto; width: 78px; height: 78px; border-radius: 10px; overflow: hidden;
+    flex: 0 0 auto; width: 70px; height: 70px; border-radius: 10px; overflow: hidden;
     position: relative; border: 2px solid #333; background: #111;
   }
   .vignette img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -288,10 +299,12 @@ function rendreGalerie() {
   const nbVides = captures.filter(c => c.type === 'vide').length;
   titreGalerie.textContent = `${nbPhotos} produit${nbPhotos > 1 ? 's' : ''} capturé${nbPhotos > 1 ? 's' : ''}${nbVides ? ' · ' + nbVides + ' vide' + (nbVides > 1 ? 's' : '') : ''}`;
 
+  // Colonnes = galeries (gauche -> droite), items empiles de haut en bas par position :
+  // ca reproduit visuellement la forme reelle du rayon, y compris les emplacements vides.
   const galeries = [...new Set(captures.map(c => c.galerie))].sort((a, b) => a - b);
-  listeGaleries.innerHTML = galeries.map((g) => {
-    const items = captures.filter(c => c.galerie === g);
-    const vignettes = items.map((c) => {
+  const colonnes = galeries.map((g) => {
+    const items = captures.filter(c => c.galerie === g).sort((a, b) => a.position - b.position);
+    const cases = items.map((c) => {
       const idxGlobal = captures.indexOf(c);
       if (c.type === 'vide') {
         return `<div class="vignette vide" data-idx="${idxGlobal}">vide<br>#${c.position}</div>`;
@@ -301,8 +314,9 @@ function rendreGalerie() {
         <div class="num">${String(c.position).padStart(3, '0')}</div>
       </div>`;
     }).join('');
-    return `<h2>Galerie ${g}</h2><div class="rangeeGalerie">${vignettes}</div>`;
+    return `<div class="colonneGalerie"><div class="etiquetteGalerie">Galerie ${g}</div>${cases}</div>`;
   }).join('');
+  listeGaleries.innerHTML = `<div id="planRayon">${colonnes}</div>`;
 
   [...listeGaleries.querySelectorAll('.vignette')].forEach(el => {
     el.onclick = () => ouvrirLightbox(parseInt(el.dataset.idx, 10));
