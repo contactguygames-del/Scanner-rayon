@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Capture auto — prototype relevé</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #0b0f0c; color: #eee; min-height: 100vh; display: flex; flex-direction: column;
+  }
+  #debugBar {
+    font-size: 11px; color: #8a9a8f; background: #000; padding: 5px 10px;
+    display: flex; justify-content: space-between; font-family: monospace;
+  }
+  #camWrap { position: relative; width: 100%; aspect-ratio: 3/4; background: #000; overflow: hidden; }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #flashVert {
+    position: absolute; inset: 0; background: rgba(30,142,62,0.55); opacity: 0;
+    pointer-events: none; transition: opacity 0.12s ease-out;
+  }
+  #cadre {
+    position: absolute; inset: 10px; border: 4px solid rgba(255,255,255,0.25); border-radius: 16px;
+    pointer-events: none; transition: border-color 0.15s ease-out;
+  }
+  #cadre.stabilisation { border-color: #e8710a; }
+  #cadre.verrouille { border-color: #1e8e3e; }
+  #badgeEtat {
+    position: absolute; top: 12px; left: 12px; padding: 5px 12px; border-radius: 20px;
+    font-size: 12px; font-weight: 700; background: rgba(0,0,0,0.55); color: #ccc;
+  }
+  #badgeEtat.stabilisation { color: #fb923c; }
+  #badgeEtat.verrouille { color: #4ade80; }
+  #compteurOverlay {
+    position: absolute; top: 12px; right: 12px; padding: 5px 12px; border-radius: 20px;
+    font-size: 13px; font-weight: 800; background: rgba(0,0,0,0.55); color: #fff;
+  }
+  #controls { display: flex; gap: 10px; padding: 14px 16px; background: #000; }
+  button {
+    flex: 1; padding: 15px; border: none; border-radius: 12px; font-size: 16px; font-weight: 700;
+    background: #2563eb; color: #fff;
+  }
+  button:disabled { background: #333; color: #777; }
+  button.secondaire { background: #333; flex: 0 0 auto; padding: 15px 18px; }
+  button.analyse { background: #7c3aed; }
+  #zoneGalerie { padding: 12px 14px 4px; }
+  #zoneGalerie h2 { font-size: 13px; color: #999; font-weight: 600; margin: 0 0 8px; }
+  #listeVignettes { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; }
+  .vignette {
+    flex: 0 0 auto; width: 78px; height: 78px; border-radius: 10px; overflow: hidden;
+    position: relative; border: 2px solid #333; background: #111;
+  }
+  .vignette img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .vignette .num {
+    position: absolute; bottom: 0; left: 0; right: 0; font-size: 10px; text-align: center;
+    background: rgba(0,0,0,0.65); color: #fff; padding: 2px 0;
+  }
+  #videSpan { color: #666; font-size: 13px; padding: 6px 0; }
+  #zoneAnalyse { padding: 4px 14px 24px; }
+  .carteAnalyse {
+    display: flex; gap: 10px; background: #161616; border-radius: 12px; padding: 10px;
+    margin-bottom: 10px; align-items: flex-start;
+  }
+  .carteAnalyse img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; flex: 0 0 auto; }
+  .carteAnalyse .infos { font-size: 12.5px; line-height: 1.5; }
+  .carteAnalyse .infos b { color: #ddd; }
+  .carteAnalyse .infos .trouve { color: #4ade80; }
+  .carteAnalyse .infos .rien { color: #777; }
+  #noteAnalyse { font-size: 12px; color: #888; padding: 0 14px 10px; }
+  #lightbox {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.94); z-index: 20;
+    display: none; flex-direction: column; align-items: center; justify-content: center; padding: 20px;
+  }
+  #lightbox img { max-width: 100%; max-height: 70vh; border-radius: 8px; }
+  #lightboxControls { display: flex; gap: 10px; margin-top: 16px; width: 100%; max-width: 340px; }
+  #lightboxLabel { color: #ccc; font-size: 13px; margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<div id="debugBar">
+  <span id="debugEtat">RECHERCHE</span>
+  <span id="debugMesures">mouvement: -- · netteté: --</span>
+</div>
+
+<div id="camWrap">
+  <video id="video" autoplay playsinline muted></video>
+  <div id="flashVert"></div>
+  <div id="cadre"></div>
+  <div id="badgeEtat">RECHERCHE</div>
+  <div id="compteurOverlay">0</div>
+</div>
+
+<div id="controls">
+  <button id="btnDemarrer">DÉMARRER</button>
+  <button id="btnArreter" class="secondaire" disabled>Arrêter</button>
+</div>
+
+<div id="zoneGalerie">
+  <h2 id="titreGalerie">Aucune capture pour l'instant</h2>
+  <div id="listeVignettes"></div>
+</div>
+
+<div id="controls" style="padding-top:0;">
+  <button id="btnAnalyser" class="analyse" style="display:none;">ANALYSER LES CAPTURES</button>
+</div>
+<div id="noteAnalyse" style="display:none;">Lecture code-barres et texte en local, sur le téléphone — aucun envoi à un serveur. Le premier lancement peut prendre un peu de temps (chargement du moteur de lecture).</div>
+<div id="zoneAnalyse"></div>
+
+<div id="lightbox">
+  <img id="lightboxImg" alt="capture en grand">
+  <div id="lightboxLabel"></div>
+  <div id="lightboxControls">
+    <button id="btnFermerLightbox" class="secondaire" style="flex:1;">Fermer</button>
+    <button id="btnSupprimer" style="flex:1; background:#b91c1c;">Supprimer cette capture</button>
+  </div>
+</div>
+
+<canvas id="canvasAnalyse" style="display:none;"></canvas>
+<canvas id="canvasCapture" style="display:none;"></canvas>
+
+<script>
+/* =====================================================================
+   PROTOTYPE — capture automatique par machine à états
+   RECHERCHE -> STABILISATION -> CAPTURE -> VERROUILLE -> (mouvement) -> RECHERCHE
+   Aucune reconnaissance de produit ici : uniquement mouvement + nettete.
+   Rien n'est enregistre dans la pellicule/galerie photo du telephone :
+   les images restent en memoire (URL.createObjectURL), propres a la page.
+   ===================================================================== */
+
+// ---- constantes reglables ----
+const ANALYSE_LARGEUR = 192;
+const ANALYSE_HAUTEUR = 144;
+const SEUIL_MOUVEMENT = 16;             // en dessous = considere stable (assoupli suite au 1er test terrain : trop strict a l'origine)
+const SEUIL_NETTETE = 8;                // au dessus = considere net (assoupli, idem)
+const SEUIL_NETTETE_PLANCHER = 4;       // netteté minimale absolue pour le filet de securite (evite de capturer une image totalement degeneree)
+const DUREE_STABILISATION_MS = 450;     // duree continue stable+net avant capture
+const SEUIL_MOUVEMENT_REARMEMENT = 22;  // mouvement pour sortir de VERROUILLE
+const DUREE_REARMEMENT_MS = 300;        // duree continue de mouvement pour rearmer
+const INTERVALLE_ANALYSE_MS = 110;      // ~9 analyses par seconde
+const LISSAGE_MOUVEMENT = 0.35;         // moyenne mobile : absorbe le bruit capteur (grain, micro-tremblement)
+const TOLERANCE_TICKS_MAUVAIS = 2;      // nb de mesures ponctuellement mauvaises tolerees avant d'annuler la stabilisation
+const DUREE_MAX_ATTENTE_MS = 3000;      // filet de securite : si ca fait plus de 3s qu'on essaie sans y arriver, on capture quand meme
+
+// ---- etat ----
+let etat = 'RECHERCHE';
+let stableDepuis = null;
+let mouvementDepuis = null;
+let bufferPrecedent = null;
+let mouvementLisse = null;
+let ticksMauvais = 0;
+let rechercheDepuis = null; // depuis quand on essaie d'obtenir une capture (filet de securite)
+let flux = null;
+let intervalleId = null;
+let audioCtx = null;
+let captures = []; // { seq, blob, url }
+
+const video = document.getElementById('video');
+const canvasAnalyse = document.getElementById('canvasAnalyse');
+const canvasCapture = document.getElementById('canvasCapture');
+const btnDemarrer = document.getElementById('btnDemarrer');
+const btnArreter = document.getElementById('btnArreter');
+const flashVert = document.getElementById('flashVert');
+const cadre = document.getElementById('cadre');
+const badgeEtat = document.getElementById('badgeEtat');
+const compteurOverlay = document.getElementById('compteurOverlay');
+const debugEtat = document.getElementById('debugEtat');
+const debugMesures = document.getElementById('debugMesures');
+const titreGalerie = document.getElementById('titreGalerie');
+const listeVignettes = document.getElementById('listeVignettes');
+const btnAnalyser = document.getElementById('btnAnalyser');
+const noteAnalyse = document.getElementById('noteAnalyse');
+const zoneAnalyse = document.getElementById('zoneAnalyse');
+const lightbox = document.getElementById('lightbox');
+const lightboxImg = document.getElementById('lightboxImg');
+const lightboxLabel = document.getElementById('lightboxLabel');
+const btnFermerLightbox = document.getElementById('btnFermerLightbox');
+const btnSupprimer = document.getElementById('btnSupprimer');
+
+window.__captures = captures; // pour verification/debug externe
+
+// ---- demarrage / arret ----
+btnDemarrer.onclick = async () => {
+  try {
+    flux = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1440 } },
+      audio: false,
+    });
+    video.srcObject = flux;
+    await video.play().catch(() => {});
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (e) { audioCtx = null; }
+    etat = 'RECHERCHE';
+    stableDepuis = null;
+    mouvementDepuis = null;
+    bufferPrecedent = null;
+    mouvementLisse = null;
+    ticksMauvais = 0;
+    rechercheDepuis = performance.now();
+    majBadge();
+    intervalleId = setInterval(tick, INTERVALLE_ANALYSE_MS);
+    btnDemarrer.disabled = true;
+    btnArreter.disabled = false;
+  } catch (e) {
+    alert("Caméra inaccessible : " + e.message);
+  }
+};
+
+btnArreter.onclick = () => {
+  if (intervalleId) clearInterval(intervalleId);
+  intervalleId = null;
+  if (flux) { flux.getTracks().forEach(t => t.stop()); flux = null; }
+  btnDemarrer.disabled = false;
+  btnArreter.disabled = true;
+};
+
+// ---- boucle d'analyse (mouvement + nettete), independante de toute reconnaissance ----
+function niveauxDeGris(imageData) {
+  const { data, width, height } = imageData;
+  const gris = new Float32Array(width * height);
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    gris[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  }
+  return gris;
+}
+
+function scoreMouvement(grisActuel, grisPrecedent) {
+  if (!grisPrecedent) return 999;
+  let somme = 0;
+  for (let i = 0; i < grisActuel.length; i++) somme += Math.abs(grisActuel[i] - grisPrecedent[i]);
+  return somme / grisActuel.length;
+}
+
+function scoreNettete(gris, largeur, hauteur) {
+  let somme = 0, sommeCarres = 0, n = 0;
+  for (let y = 1; y < hauteur - 1; y++) {
+    for (let x = 1; x < largeur - 1; x++) {
+      const idx = y * largeur + x;
+      const lap = -4 * gris[idx] + gris[idx - 1] + gris[idx + 1] + gris[idx - largeur] + gris[idx + largeur];
+      somme += lap; sommeCarres += lap * lap; n++;
+    }
+  }
+  const moyenne = somme / n;
+  return (sommeCarres / n) - (moyenne * moyenne);
+}
+
+function tick() {
+  if (!flux || video.readyState < 2) return;
+  canvasAnalyse.width = ANALYSE_LARGEUR;
+  canvasAnalyse.height = ANALYSE_HAUTEUR;
+  const ctxA = canvasAnalyse.getContext('2d', { willReadFrequently: true });
+  ctxA.drawImage(video, 0, 0, ANALYSE_LARGEUR, ANALYSE_HAUTEUR);
+  const img = ctxA.getImageData(0, 0, ANALYSE_LARGEUR, ANALYSE_HAUTEUR);
+  const gris = niveauxDeGris(img);
+  const mouvementBrut = scoreMouvement(gris, bufferPrecedent);
+  const nettete = scoreNettete(gris, ANALYSE_LARGEUR, ANALYSE_HAUTEUR);
+  bufferPrecedent = gris;
+
+  // moyenne mobile : un capteur de telephone reel a du grain/bruit a chaque image ;
+  // sans lissage, une seule mesure parasite suffit a tout annuler (c'est le bug remonte par le test terrain).
+  mouvementLisse = (mouvementLisse === null) ? mouvementBrut : (mouvementLisse * (1 - LISSAGE_MOUVEMENT) + mouvementBrut * LISSAGE_MOUVEMENT);
+  const mouvement = mouvementLisse;
+
+  debugMesures.textContent = `mouvement: ${mouvement.toFixed(1)} (brut ${mouvementBrut.toFixed(1)}) · netteté: ${nettete.toFixed(1)}`;
+
+  const maintenant = performance.now();
+
+  // filet de securite : si ca fait trop longtemps qu'on essaie (RECHERCHE/STABILISATION
+  // qui n'aboutissent pas, quelle qu'en soit la cause reelle sur ce telephone), on capture
+  // quand meme plutot que de laisser Guy immobile indefiniment. On exige juste un minimum
+  // absolu de nettete pour ne pas capturer une image totalement degeneree (main devant l'objectif, etc).
+  if ((etat === 'RECHERCHE' || etat === 'STABILISATION') && rechercheDepuis !== null
+      && (maintenant - rechercheDepuis >= DUREE_MAX_ATTENTE_MS) && nettete > SEUIL_NETTETE_PLANCHER) {
+    declencherCapture();
+    etat = 'VERROUILLE';
+    mouvementDepuis = null;
+    majBadge();
+    return;
+  }
+
+  if (etat === 'RECHERCHE') {
+    if (mouvement < SEUIL_MOUVEMENT && nettete > SEUIL_NETTETE) {
+      etat = 'STABILISATION';
+      stableDepuis = maintenant;
+      ticksMauvais = 0;
+      majBadge();
+    }
+  } else if (etat === 'STABILISATION') {
+    const conditionOk = mouvement < SEUIL_MOUVEMENT && nettete > SEUIL_NETTETE;
+    if (!conditionOk) {
+      ticksMauvais++;
+      if (ticksMauvais > TOLERANCE_TICKS_MAUVAIS) {
+        // pas juste un accroc isole : on annule vraiment
+        etat = 'RECHERCHE';
+        stableDepuis = null;
+        ticksMauvais = 0;
+        majBadge();
+      }
+      // sinon : accroc tolere, on ne remet pas le chrono de stabilisation a zero
+    } else {
+      ticksMauvais = 0;
+      if (maintenant - stableDepuis >= DUREE_STABILISATION_MS) {
+        declencherCapture();
+        etat = 'VERROUILLE';
+        mouvementDepuis = null;
+        majBadge();
+      }
+    }
+  } else if (etat === 'VERROUILLE') {
+    if (mouvement >= SEUIL_MOUVEMENT_REARMEMENT) {
+      if (mouvementDepuis === null) mouvementDepuis = maintenant;
+      else if (maintenant - mouvementDepuis >= DUREE_REARMEMENT_MS) {
+        etat = 'RECHERCHE';
+        stableDepuis = null;
+        mouvementDepuis = null;
+        rechercheDepuis = maintenant; // nouvelle recherche : le filet de securite repart de zero
+        majBadge();
+      }
+    } else {
+      mouvementDepuis = null; // reste verrouille : UNE capture, pas quinze
+    }
+  }
+}
+
+function majBadge() {
+  debugEtat.textContent = etat;
+  const classe = etat === 'STABILISATION' ? 'stabilisation' : etat === 'VERROUILLE' ? 'verrouille' : '';
+  badgeEtat.className = classe;
+  badgeEtat.textContent = etat;
+  cadre.className = classe;
+  console.log('[ETAT]', etat);
+}
+
+// ---- capture haute resolution (independante de la resolution d'analyse) ----
+function declencherCapture() {
+  const largeur = video.videoWidth || 1280;
+  const hauteur = video.videoHeight || 960;
+  canvasCapture.width = largeur;
+  canvasCapture.height = hauteur;
+  const ctxC = canvasCapture.getContext('2d');
+  ctxC.drawImage(video, 0, 0, largeur, hauteur);
+  canvasCapture.toBlob((blob) => {
+    if (!blob) return;
+    const seq = captures.length + 1;
+    const url = URL.createObjectURL(blob);
+    captures.push({ seq, blob, url });
+    window.__captures = captures;
+    afficherConfirmation();
+    rendreGalerie();
+    console.log('[CAPTURE]', seq, 'taille=', blob.size, 'octets');
+  }, 'image/jpeg', 0.85);
+}
+
+function afficherConfirmation() {
+  flashVert.style.opacity = '1';
+  setTimeout(() => { flashVert.style.opacity = '0'; }, 160);
+  beep();
+  compteurOverlay.textContent = String(captures.length);
+}
+
+function beep() {
+  if (!audioCtx) return;
+  try {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(); osc.stop(audioCtx.currentTime + 0.15);
+  } catch (e) { /* silencieux si le son echoue, ne bloque pas la capture */ }
+}
+
+// ---- galerie ----
+function rendreGalerie() {
+  if (captures.length === 0) {
+    titreGalerie.textContent = 'Aucune capture pour l\'instant';
+    listeVignettes.innerHTML = '';
+    btnAnalyser.style.display = 'none';
+    noteAnalyse.style.display = 'none';
+    return;
+  }
+  titreGalerie.textContent = `${captures.length} produit${captures.length > 1 ? 's' : ''} capturé${captures.length > 1 ? 's' : ''}`;
+  listeVignettes.innerHTML = captures.map((c, i) => `
+    <div class="vignette" data-idx="${i}">
+      <img src="${c.url}" alt="capture ${c.seq}">
+      <div class="num">${String(i + 1).padStart(3, '0')}</div>
+    </div>
+  `).join('');
+  [...listeVignettes.querySelectorAll('.vignette')].forEach(el => {
+    el.onclick = () => ouvrirLightbox(parseInt(el.dataset.idx, 10));
+  });
+  btnAnalyser.style.display = 'block';
+  noteAnalyse.style.display = 'block';
+}
+
+let idxCourant = null;
+function ouvrirLightbox(idx) {
+  idxCourant = idx;
+  const c = captures[idx];
+  lightboxImg.src = c.url;
+  lightboxLabel.textContent = `Capture ${String(idx + 1).padStart(3, '0')} sur ${captures.length}`;
+  lightbox.style.display = 'flex';
+}
+btnFermerLightbox.onclick = () => { lightbox.style.display = 'none'; };
+btnSupprimer.onclick = () => {
+  if (idxCourant === null) return;
+  captures.splice(idxCourant, 1);
+  captures.forEach((c, i) => c.seq = i + 1); // renumerotation, ordre conserve
+  window.__captures = captures;
+  compteurOverlay.textContent = String(captures.length);
+  lightbox.style.display = 'none';
+  rendreGalerie();
+};
+
+// ---- analyse differee : code-barres (ZXing) + OCR (Tesseract.js), 100% local, sans compte ni cle API ----
+let librairiesChargees = false;
+function chargerScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+btnAnalyser.onclick = async () => {
+  btnAnalyser.disabled = true;
+  btnAnalyser.textContent = 'Chargement du moteur de lecture...';
+  zoneAnalyse.innerHTML = '';
+  try {
+    if (!librairiesChargees) {
+      await chargerScript('https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js');
+      await chargerScript('https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js');
+      librairiesChargees = true;
+    }
+  } catch (e) {
+    zoneAnalyse.innerHTML = `<div id="videSpan">Échec du chargement du moteur de lecture (réseau indisponible en ce moment ?). Les captures restent intactes, tu peux réessayer plus tard, elles ne sont pas perdues.</div>`;
+    btnAnalyser.disabled = false;
+    btnAnalyser.textContent = 'ANALYSER LES CAPTURES';
+    return;
+  }
+
+  const lecteurBarres = new ZXing.BrowserMultiFormatReader();
+
+  for (const c of captures) {
+    const carte = document.createElement('div');
+    carte.className = 'carteAnalyse';
+    carte.innerHTML = `
+      <img src="${c.url}" alt="capture ${c.seq}">
+      <div class="infos">
+        <div><b>Capture ${String(c.seq).padStart(3, '0')}</b></div>
+        <div class="gencod">Gencod : recherche...</div>
+        <div class="ocr">Texte : lecture en cours...</div>
+      </div>`;
+    zoneAnalyse.appendChild(carte);
+
+    const elGencod = carte.querySelector('.gencod');
+    const elOcr = carte.querySelector('.ocr');
+
+    try {
+      const resultat = await lecteurBarres.decodeFromImageUrl(c.url);
+      elGencod.innerHTML = `<span class="trouve">Gencod détecté : ${resultat.getText()} (${resultat.getBarcodeFormat()})</span>`;
+    } catch (e) {
+      elGencod.innerHTML = `<span class="rien">Aucun code-barres détecté</span>`;
+    }
+
+    try {
+      const { data } = await Tesseract.recognize(c.url, 'fra');
+      const texte = (data.text || '').replace(/\s+/g, ' ').trim();
+      if (texte.length > 2) {
+        elOcr.innerHTML = `<span class="trouve">Texte lu (brut, à vérifier) : "${texte.slice(0, 140)}"</span>`;
+      } else {
+        elOcr.innerHTML = `<span class="rien">Aucun texte lisible détecté</span>`;
+      }
+    } catch (e) {
+      elOcr.innerHTML = `<span class="rien">Lecture de texte indisponible (${e.message || e})</span>`;
+    }
+  }
+
+  btnAnalyser.disabled = false;
+  btnAnalyser.textContent = 'RE-ANALYSER';
+};
+</script>
+</body>
+</html>
