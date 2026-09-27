@@ -167,7 +167,7 @@
 <div id="controls" style="padding-top:0;">
   <button id="btnExporter" class="export" style="display:none;">⬇️ Télécharger tout (ZIP)</button>
 </div>
-<div id="noteExport" style="display:none;">Contient toutes les photos, nommées par galerie/position ou ligne/position selon le mode choisi, plus un fichier releve.json qui décrit toute la structure (y compris les emplacements vides) — dépose-le ensuite dans ton Drive.</div>
+<div id="noteExport" style="display:none;">Contient toutes les photos (sachets et boîtes confondus, jamais mélangés), plus un fichier releve.json qui sépare bien les deux dans des sections distinctes (y compris les emplacements vides) — dépose-le ensuite dans ton Drive.</div>
 
 <div id="controls" style="padding-top:0; padding-bottom:22px;">
   <button id="btnNouvelleSession" class="secondaire" style="flex:1;">🗑️ Nouvelle session (efface tout)</button>
@@ -201,8 +201,11 @@ let flux = null;
 let audioCtx = null;
 let galerieActuelle = 1;
 let positionActuelle = 0; // position du PROCHAIN item dans la galerie actuelle (avant capture)
-let captures = []; // { seq, galerie, position, type: 'photo'|'vide', blob?, url? }
+let captures = []; // { seq, galerie, position, type: 'photo'|'vide', modeOrigine: 'sachet'|'boite', blob?, url? }
 let modeCapture = 'sachet'; // 'sachet' (galeries en colonnes) ou 'boite' (lignes empilees)
+// chaque mode a sa PROPRE numerotation galerie/position, independante de l'autre mode,
+// pour que basculer de mode ne fasse jamais apparaitre un sachet parmi les boites (et inversement)
+let compteursParMode = { sachet: { galerie: 1, position: 0 }, boite: { galerie: 1, position: 0 } };
 
 const btnModeSachet = document.getElementById('btnModeSachet');
 const btnModeBoite = document.getElementById('btnModeBoite');
@@ -279,7 +282,10 @@ async function supprimerCaptureDB(id) {
 async function sauverEtatDB() {
   try {
     const db = await ouvrirDB();
-    db.transaction('etat', 'readwrite').objectStore('etat').put({ cle: 'etat', galerieActuelle, positionActuelle, modeCapture });
+    // on remet a jour les compteurs du mode ACTUELLEMENT actif avant de sauvegarder,
+    // pour que chaque mode retrouve exactement la ou il en etait, independamment de l'autre
+    compteursParMode[modeCapture] = { galerie: galerieActuelle, position: positionActuelle };
+    db.transaction('etat', 'readwrite').objectStore('etat').put({ cle: 'etat', modeCapture, compteursParMode });
   } catch (e) { console.log('[SAVE] echec sauvegarde etat (pas bloquant) :', e.message || e); }
 }
 
@@ -348,7 +354,7 @@ btnCapturer.onclick = () => {
 
 btnVide.onclick = () => {
   positionActuelle++;
-  const entree = { id: idUnique(), seq: captures.length + 1, galerie: galerieActuelle, position: positionActuelle, type: 'vide' };
+  const entree = { id: idUnique(), seq: captures.length + 1, galerie: galerieActuelle, position: positionActuelle, type: 'vide', modeOrigine: modeCapture };
   captures.push(entree);
   window.__captures = captures;
   compteurOverlay.textContent = String(captures.length);
@@ -371,20 +377,33 @@ function majPositionOverlay() {
   positionOverlay.textContent = `${etiquetteGroupe()} ${galerieActuelle} · position ${positionActuelle + 1}`;
 }
 
-// ---- mode sachet (galeries en colonnes) / boite (lignes empilees) : change juste le
-// vocabulaire et l'orientation du plan, la structure de donnees reste identique ----
-function etiquetteGroupe() {
-  return modeCapture === 'boite' ? 'Ligne' : 'Galerie';
+// ---- mode sachet (galeries en colonnes) / boite (lignes empilees) : chaque capture porte
+// son propre modeOrigine et chaque mode a ses propres compteurs, donc basculer de mode ne
+// fait JAMAIS apparaitre un sachet parmi les boites (et inversement) ----
+function etiquetteGroupe(m) {
+  return (m || modeCapture) === 'boite' ? 'Ligne' : 'Galerie';
 }
 
-function definirMode(m) {
-  modeCapture = m;
+// applique juste l'affichage (boutons, overlay, panneau en cours, plan) pour un mode donne,
+// sans toucher aux compteurs : utilise a la fois par definirMode() et par la restauration
+function appliquerModeUI(m) {
   btnModeSachet.classList.toggle('actif', m === 'sachet');
   btnModeBoite.classList.toggle('actif', m === 'boite');
   btnGalerieSuivante.textContent = m === 'boite' ? 'Ligne suivante +' : 'Galerie suivante +';
   majPositionOverlay();
   rendreGalerieEnCours();
   rendreGalerie();
+}
+
+function definirMode(m) {
+  if (m === modeCapture) return; // deja sur ce mode, rien a faire
+  // sauvegarde ou en etait le mode qu'on quitte, pour le retrouver exactement plus tard
+  compteursParMode[modeCapture] = { galerie: galerieActuelle, position: positionActuelle };
+  modeCapture = m;
+  const c = compteursParMode[m] || { galerie: 1, position: 0 };
+  galerieActuelle = c.galerie;
+  positionActuelle = c.position;
+  appliquerModeUI(m);
   sauverEtatDB();
 }
 btnModeSachet.onclick = () => definirMode('sachet');
@@ -394,7 +413,11 @@ btnModeBoite.onclick = () => definirMode('boite');
 // montre en direct les captures (et vides) de la galerie en train d'etre prise, top -> bas ----
 function rendreGalerieEnCours() {
   etiquetteEnCours.textContent = `${etiquetteGroupe()} ${galerieActuelle} en cours`;
-  const items = captures.filter(c => c.galerie === galerieActuelle).sort((a, b) => a.position - b.position);
+  // filtre par modeOrigine EN PLUS de la galerie : une capture d'un autre mode ne doit
+  // jamais apparaitre ici, meme si elle partage le meme numero de galerie/ligne
+  const items = captures
+    .filter(c => (c.modeOrigine || 'sachet') === modeCapture && c.galerie === galerieActuelle)
+    .sort((a, b) => a.position - b.position);
   if (items.length === 0) {
     pileEnCours.innerHTML = '<div class="videSpanVide">Rien capturé pour l\'instant</div>';
     return;
@@ -405,7 +428,7 @@ function rendreGalerieEnCours() {
       return `<div class="miniVignette vide" data-idx="${idxGlobal}">vide #${c.position}</div>`;
     }
     return `<div class="miniVignette" data-idx="${idxGlobal}">
-      <img src="${c.url}" alt="capture ${etiquetteGroupe()} ${c.galerie} position ${c.position}">
+      <img src="${c.url}" alt="capture ${etiquetteGroupe(c.modeOrigine)} ${c.galerie} position ${c.position}">
       <div class="num">${String(c.position).padStart(3, '0')}</div>
     </div>`;
   }).join('');
@@ -427,7 +450,7 @@ function declencherCapture() {
     if (!blob) return;
     positionActuelle++;
     const url = URL.createObjectURL(blob);
-    const entree = { id: idUnique(), seq: captures.length + 1, galerie: galerieActuelle, position: positionActuelle, type: 'photo', blob, url };
+    const entree = { id: idUnique(), seq: captures.length + 1, galerie: galerieActuelle, position: positionActuelle, type: 'photo', modeOrigine: modeCapture, blob, url };
     captures.push(entree);
     window.__captures = captures;
     afficherConfirmation();
@@ -461,18 +484,25 @@ function beep() {
   } catch (e) { /* silencieux si le son echoue, ne bloque pas la capture */ }
 }
 
-// ---- renumerotation apres suppression : position recalculee PAR galerie, ordre conserve ----
+// ---- renumerotation apres suppression : position recalculee PAR (mode + galerie), ordre
+// conserve. Le groupement inclut le mode pour que la numerotation d'un sachet "galerie 1"
+// et d'une boite "ligne 1" restent totalement independantes l'une de l'autre ----
 function renumeroter() {
-  const parGalerie = {};
+  const parGroupe = {};
   captures.forEach((c) => {
-    if (!parGalerie[c.galerie]) parGalerie[c.galerie] = 0;
-    parGalerie[c.galerie]++;
-    c.position = parGalerie[c.galerie];
+    const cle = `${c.modeOrigine || 'sachet'}_${c.galerie}`;
+    if (!parGroupe[cle]) parGroupe[cle] = 0;
+    parGroupe[cle]++;
+    c.position = parGroupe[cle];
   });
   captures.forEach((c, i) => { c.seq = i + 1; });
 }
 
 // ---- galerie (affichage groupe par galerie/colonne) ----
+// N'affiche QUE les captures du mode actuellement selectionne (modeOrigine === modeCapture) :
+// un sachet ne doit jamais apparaitre dans le plan des boites, et inversement. Les boutons
+// Analyser/Exporter, eux, restent visibles des qu'il existe une capture dans N'IMPORTE quel
+// mode, car l'export final regroupe toujours l'ensemble du releve (sachets + boites).
 function rendreGalerie() {
   if (captures.length === 0) {
     titreGalerie.textContent = 'Aucune capture pour l\'instant';
@@ -483,45 +513,54 @@ function rendreGalerie() {
     noteExport.style.display = 'none';
     return;
   }
-  const nbPhotos = captures.filter(c => c.type === 'photo').length;
-  const nbVides = captures.filter(c => c.type === 'vide').length;
-  titreGalerie.textContent = `${nbPhotos} produit${nbPhotos > 1 ? 's' : ''} capturé${nbPhotos > 1 ? 's' : ''}${nbVides ? ' · ' + nbVides + ' vide' + (nbVides > 1 ? 's' : '') : ''}`;
 
-  // Sachets : colonnes = galeries (gauche -> droite), items empiles de haut en bas par position.
-  // Boites : lignes = groupes empiles de haut en bas, boites de gauche a droite dans chaque ligne.
-  // Dans les deux cas ca reproduit visuellement la forme reelle du rayon, vides compris.
-  const etq = etiquetteGroupe();
-  const groupes = [...new Set(captures.map(c => c.galerie))].sort((a, b) => a - b);
-  const caseVignette = (c) => {
-    const idxGlobal = captures.indexOf(c);
-    if (c.type === 'vide') {
-      return `<div class="vignette vide" data-idx="${idxGlobal}">vide<br>#${c.position}</div>`;
-    }
-    return `<div class="vignette" data-idx="${idxGlobal}">
-      <img src="${c.url}" alt="capture ${etq} ${c.galerie} position ${c.position}">
-      <div class="num">${String(c.position).padStart(3, '0')}</div>
-    </div>`;
-  };
+  const visibles = captures.filter(c => (c.modeOrigine || 'sachet') === modeCapture);
 
-  if (modeCapture === 'boite') {
-    const lignes = groupes.map((g) => {
-      const items = captures.filter(c => c.galerie === g).sort((a, b) => a.position - b.position);
-      const cases = items.map(caseVignette).join('');
-      return `<div class="rangeeLigne"><div class="etiquetteGalerie">${etq} ${g}</div><div class="rangeeBoites">${cases}</div></div>`;
-    }).join('');
-    listeGaleries.innerHTML = `<div id="planRayonLignes">${lignes}</div>`;
+  if (visibles.length === 0) {
+    titreGalerie.textContent = `Aucun produit capturé dans ce mode pour l'instant (l'autre mode a ${captures.length} élément(s))`;
+    listeGaleries.innerHTML = '';
   } else {
-    const colonnes = groupes.map((g) => {
-      const items = captures.filter(c => c.galerie === g).sort((a, b) => a.position - b.position);
-      const cases = items.map(caseVignette).join('');
-      return `<div class="colonneGalerie"><div class="etiquetteGalerie">${etq} ${g}</div>${cases}</div>`;
-    }).join('');
-    listeGaleries.innerHTML = `<div id="planRayon">${colonnes}</div>`;
+    const nbPhotos = visibles.filter(c => c.type === 'photo').length;
+    const nbVides = visibles.filter(c => c.type === 'vide').length;
+    titreGalerie.textContent = `${nbPhotos} produit${nbPhotos > 1 ? 's' : ''} capturé${nbPhotos > 1 ? 's' : ''}${nbVides ? ' · ' + nbVides + ' vide' + (nbVides > 1 ? 's' : '') : ''}`;
+
+    // Sachets : colonnes = galeries (gauche -> droite), items empiles de haut en bas par position.
+    // Boites : lignes = groupes empiles de haut en bas, boites de gauche a droite dans chaque ligne.
+    // Dans les deux cas ca reproduit visuellement la forme reelle du rayon, vides compris.
+    const etq = etiquetteGroupe();
+    const groupes = [...new Set(visibles.map(c => c.galerie))].sort((a, b) => a - b);
+    const caseVignette = (c) => {
+      const idxGlobal = captures.indexOf(c);
+      if (c.type === 'vide') {
+        return `<div class="vignette vide" data-idx="${idxGlobal}">vide<br>#${c.position}</div>`;
+      }
+      return `<div class="vignette" data-idx="${idxGlobal}">
+        <img src="${c.url}" alt="capture ${etq} ${c.galerie} position ${c.position}">
+        <div class="num">${String(c.position).padStart(3, '0')}</div>
+      </div>`;
+    };
+
+    if (modeCapture === 'boite') {
+      const lignes = groupes.map((g) => {
+        const items = visibles.filter(c => c.galerie === g).sort((a, b) => a.position - b.position);
+        const cases = items.map(caseVignette).join('');
+        return `<div class="rangeeLigne"><div class="etiquetteGalerie">${etq} ${g}</div><div class="rangeeBoites">${cases}</div></div>`;
+      }).join('');
+      listeGaleries.innerHTML = `<div id="planRayonLignes">${lignes}</div>`;
+    } else {
+      const colonnes = groupes.map((g) => {
+        const items = visibles.filter(c => c.galerie === g).sort((a, b) => a.position - b.position);
+        const cases = items.map(caseVignette).join('');
+        return `<div class="colonneGalerie"><div class="etiquetteGalerie">${etq} ${g}</div>${cases}</div>`;
+      }).join('');
+      listeGaleries.innerHTML = `<div id="planRayon">${colonnes}</div>`;
+    }
+
+    [...listeGaleries.querySelectorAll('.vignette')].forEach(el => {
+      el.onclick = () => ouvrirLightbox(parseInt(el.dataset.idx, 10));
+    });
   }
 
-  [...listeGaleries.querySelectorAll('.vignette')].forEach(el => {
-    el.onclick = () => ouvrirLightbox(parseInt(el.dataset.idx, 10));
-  });
   btnAnalyser.style.display = 'block';
   noteAnalyse.style.display = 'block';
   btnExporter.style.display = 'block';
@@ -534,7 +573,7 @@ function ouvrirLightbox(idx) {
   if (c.type === 'vide') return; // rien a afficher en grand pour un emplacement vide
   idxCourant = idx;
   lightboxImg.src = c.url;
-  lightboxLabel.textContent = `${etiquetteGroupe()} ${c.galerie} · position ${c.position}`;
+  lightboxLabel.textContent = `${etiquetteGroupe(c.modeOrigine)} ${c.galerie} · position ${c.position}`;
   lightbox.style.display = 'flex';
 }
 btnFermerLightbox.onclick = () => { lightbox.style.display = 'none'; };
@@ -542,10 +581,10 @@ btnSupprimer.onclick = () => {
   if (idxCourant === null) return;
   const [supprimee] = captures.splice(idxCourant, 1);
   renumeroter();
-  // resynchronise le compteur de la galerie EN COURS sur le nombre reel de captures
-  // restantes : sans ca, une suppression au milieu d'une galerie laissait le prochain
-  // numero de position "sauter" un cran pour toujours (bug reel trouve sur un releve terrain).
-  positionActuelle = captures.filter(c => c.galerie === galerieActuelle).length;
+  // resynchronise le compteur de la galerie EN COURS (du mode actif uniquement) sur le
+  // nombre reel de captures restantes DE CE MODE : sans le filtre par modeOrigine, une
+  // suppression dans l'autre mode aurait pu fausser ce compteur.
+  positionActuelle = captures.filter(c => (c.modeOrigine || 'sachet') === modeCapture && c.galerie === galerieActuelle).length;
   window.__captures = captures;
   compteurOverlay.textContent = String(captures.length);
   lightbox.style.display = 'none';
@@ -590,9 +629,9 @@ btnAnalyser.onclick = async () => {
     const carte = document.createElement('div');
     carte.className = 'carteAnalyse';
     carte.innerHTML = `
-      <img src="${c.url}" alt="capture ${etiquetteGroupe()} ${c.galerie} position ${c.position}">
+      <img src="${c.url}" alt="capture ${etiquetteGroupe(c.modeOrigine)} ${c.galerie} position ${c.position}">
       <div class="infos">
-        <div><b>${etiquetteGroupe()} ${c.galerie} · position ${c.position}</b></div>
+        <div><b>${etiquetteGroupe(c.modeOrigine)} ${c.galerie} · position ${c.position}</b></div>
         <div class="gencod">Gencod : recherche...</div>
         <div class="ocr">Texte : lecture en cours...</div>
       </div>`;
@@ -636,27 +675,33 @@ btnExporter.onclick = async () => {
       jszipCharge = true;
     }
     const zip = new JSZip();
-    const prefixe = modeCapture === 'boite' ? 'ligne' : 'galerie';
-    const releve = { genere_le: new Date().toISOString(), mode: modeCapture, groupes: {} };
-
+    // chaque capture est classee selon SON PROPRE modeOrigine (pas le mode actuellement
+    // affiche a l'ecran), pour que le zip separe toujours proprement sachets et boites,
+    // meme si Guy a bascule d'un mode a l'autre plusieurs fois pendant la session.
+    const parMode = {};
     for (const c of captures) {
+      const m = c.modeOrigine || 'sachet';
+      const prefixe = m === 'boite' ? 'ligne' : 'galerie';
+      if (!parMode[m]) parMode[m] = {};
       const cle = String(c.galerie);
-      if (!releve.groupes[cle]) releve.groupes[cle] = [];
+      if (!parMode[m][cle]) parMode[m][cle] = [];
       if (c.type === 'photo') {
-        const nomFichier = `${prefixe}${String(c.galerie).padStart(2, '0')}_position${String(c.position).padStart(2, '0')}.jpg`;
+        const nomFichier = `${m}_${prefixe}${String(c.galerie).padStart(2, '0')}_position${String(c.position).padStart(2, '0')}.jpg`;
         zip.file(nomFichier, c.blob);
-        releve.groupes[cle].push({ position: c.position, type: 'photo', fichier: nomFichier });
+        parMode[m][cle].push({ position: c.position, type: 'photo', fichier: nomFichier });
       } else {
-        releve.groupes[cle].push({ position: c.position, type: 'vide' });
+        parMode[m][cle].push({ position: c.position, type: 'vide' });
       }
     }
+    const releve = { genere_le: new Date().toISOString() };
+    Object.keys(parMode).forEach((m) => { releve[m] = { groupes: parMode[m] }; });
     zip.file('releve.json', JSON.stringify(releve, null, 2));
 
     const contenuZip = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(contenuZip);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `releve-rayon-${modeCapture}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.zip`;
+    a.download = `releve-rayon-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.zip`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -674,6 +719,7 @@ btnNouvelleSession.onclick = async () => {
   if (captures.length > 0 && !confirm(`Effacer les ${captures.length} capture(s) actuelle(s) et repartir à zéro ? Cette action est définitive (pense à exporter le zip avant si besoin).`)) return;
   captures = [];
   window.__captures = captures;
+  compteursParMode = { sachet: { galerie: 1, position: 0 }, boite: { galerie: 1, position: 0 } };
   galerieActuelle = 1;
   positionActuelle = 0;
   await effacerSessionDB();
@@ -692,18 +738,34 @@ btnNouvelleSession.onclick = async () => {
   const reprendre = confirm(`Une session précédente non exportée a été retrouvée sur ce téléphone (${sauvegardees.length} élément(s)).\n\nOK = la reprendre\nAnnuler = l'effacer et repartir à zéro`);
   if (reprendre) {
     sauvegardees.sort((a, b) => a.seq - b.seq);
-    sauvegardees.forEach((c) => { if (c.type === 'photo' && c.blob) c.url = URL.createObjectURL(c.blob); });
+    sauvegardees.forEach((c) => {
+      if (!c.modeOrigine) c.modeOrigine = 'sachet'; // compatibilite avec une session sauvegardee avant l'ajout des modes
+      if (c.type === 'photo' && c.blob) c.url = URL.createObjectURL(c.blob);
+    });
     captures = sauvegardees;
     window.__captures = captures;
-    if (etat && etat.galerieActuelle) {
-      galerieActuelle = etat.galerieActuelle;
-      positionActuelle = etat.positionActuelle || 0;
-    } else if (captures.length > 0) {
-      galerieActuelle = Math.max(...captures.map(c => c.galerie));
-      positionActuelle = captures.filter(c => c.galerie === galerieActuelle).length;
+
+    if (etat && etat.compteursParMode) {
+      // format recent : chaque mode a deja ses propres compteurs sauvegardes
+      compteursParMode = etat.compteursParMode;
+    } else {
+      // ancien format (avant la separation des modes) ou etat absent : on reconstruit les
+      // compteurs de chaque mode a partir des captures elles-memes, separement
+      ['sachet', 'boite'].forEach((m) => {
+        const items = captures.filter(c => c.modeOrigine === m);
+        if (items.length > 0) {
+          const g = Math.max(...items.map(c => c.galerie));
+          compteursParMode[m] = { galerie: g, position: items.filter(c => c.galerie === g).length };
+        }
+      });
     }
+
+    modeCapture = (etat && etat.modeCapture) || 'sachet';
+    const c0 = compteursParMode[modeCapture] || { galerie: 1, position: 0 };
+    galerieActuelle = c0.galerie;
+    positionActuelle = c0.position;
     compteurOverlay.textContent = String(captures.length);
-    definirMode((etat && etat.modeCapture) || 'sachet'); // reconstruit aussi overlay + plan + panneau en cours
+    appliquerModeUI(modeCapture); // reconstruit overlay + plan + panneau en cours, sans re-sauvegarder les compteurs de l'autre mode
   } else {
     await effacerSessionDB();
   }
