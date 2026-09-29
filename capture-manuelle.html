@@ -13,6 +13,12 @@
   #zoneCapture {
     display: flex; flex-direction: row; align-items: stretch; gap: 10px;
     padding: 10px 14px 0;
+    /* hauteur FIXE de la rangee (= hauteur du cadre camera d'apres son ratio 3/4),
+       calculee ici au lieu de laisser le flex la deduire du contenu : sans ca, le
+       panneau "galerie en cours" grandit avec le nombre de photos (au lieu de
+       defiler dans sa propre case) et entraine le cadre camera avec lui via
+       align-items:stretch -> la camera avait l'air d'"agrandir" a chaque photo. */
+    height: min(calc((100vw - 28px) * 0.56), 253px);
   }
   #camWrap {
     position: relative; width: 42%; max-width: 190px;
@@ -21,14 +27,14 @@
   }
   video { width: 100%; height: 100%; object-fit: cover; display: block; }
   #galerieEnCours {
-    flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0;
+    flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0;
     background: #131313; border-radius: 12px; padding: 8px; overflow: hidden;
   }
   #etiquetteEnCours {
     font-size: 11px; color: #7dd3fc; font-weight: 700; margin-bottom: 6px; flex: 0 0 auto;
   }
   #pileEnCours {
-    flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: row; flex-wrap: wrap;
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: row; flex-wrap: wrap;
     align-content: flex-start; gap: 6px;
   }
   #pileEnCours .videSpanVide { color: #666; font-size: 12px; padding: 4px 0; }
